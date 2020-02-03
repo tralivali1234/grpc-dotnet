@@ -18,14 +18,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.IO;
-using System.IO.Compression;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using Grpc.AspNetCore.Server.Compression;
 using Grpc.Core;
+using Grpc.Shared;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Primitives;
@@ -76,47 +74,14 @@ namespace Grpc.AspNetCore.Server.Internal
             return false;
         }
 
-        public static bool IsGrpcContentType(string contentType)
-        {
-            if (contentType == null)
-            {
-                return false;
-            }
-
-            if (!contentType.StartsWith(GrpcProtocolConstants.GrpcContentType, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (contentType.Length == GrpcProtocolConstants.GrpcContentType.Length)
-            {
-                // Exact match
-                return true;
-            }
-
-            // Support variations on the content-type (e.g. +proto, +json)
-            char nextChar = contentType[GrpcProtocolConstants.GrpcContentType.Length];
-            if (nextChar == ';')
-            {
-                return true;
-            }
-            if (nextChar == '+')
-            {
-                // Accept any message format. Marshaller could be set to support third-party formats
-                return true;
-            }
-
-            return false;
-        }
-
-        public static bool IsInvalidContentType(HttpContext httpContext, [NotNullWhenTrue]out string? error)
+        public static bool IsInvalidContentType(HttpContext httpContext, [NotNullWhen(true)]out string? error)
         {
             if (httpContext.Request.ContentType == null)
             {
                 error = "Content-Type is missing from the request.";
                 return true;
             }
-            else if (!IsGrpcContentType(httpContext.Request.ContentType))
+            else if (!CommonGrpcProtocolHelpers.IsContentType(GrpcProtocolConstants.GrpcContentType, httpContext.Request.ContentType))
             {
                 error = $"Content-Type '{httpContext.Request.ContentType}' is not supported.";
                 return true;
@@ -126,7 +91,7 @@ namespace Grpc.AspNetCore.Server.Internal
             return false;
         }
 
-        public static void SendHttpError(HttpResponse response, int httpStatusCode, StatusCode grpcStatusCode, string message)
+        public static void BuildHttpErrorResponse(HttpResponse response, int httpStatusCode, StatusCode grpcStatusCode, string message)
         {
             response.StatusCode = httpStatusCode;
             SetStatus(GetTrailersDestination(response), new Status(grpcStatusCode, message));
@@ -157,45 +122,6 @@ namespace Grpc.AspNetCore.Server.Internal
             return Convert.FromBase64String(decodable);
         }
 
-        internal static bool TryDecompressMessage(string compressionEncoding, List<ICompressionProvider> compressionProviders, byte[] messageData, [NotNullWhenTrue]out byte[]? result)
-        {
-            foreach (var compressionProvider in compressionProviders)
-            {
-                if (string.Equals(compressionEncoding, compressionProvider.EncodingName, StringComparison.Ordinal))
-                {
-                    var output = new MemoryStream();
-                    var compressionStream = compressionProvider.CreateDecompressionStream(new MemoryStream(messageData));
-                    compressionStream.CopyTo(output);
-
-                    result = output.ToArray();
-                    return true;
-                }
-            }
-
-            result = null;
-            return false;
-        }
-
-        internal static byte[] CompressMessage(string compressionEncoding, CompressionLevel? compressionLevel, List<ICompressionProvider> compressionProviders, byte[] messageData)
-        {
-            foreach (var compressionProvider in compressionProviders)
-            {
-                if (string.Equals(compressionEncoding, compressionProvider.EncodingName, StringComparison.Ordinal))
-                {
-                    var output = new MemoryStream();
-                    using (var compressionStream = compressionProvider.CreateCompressionStream(output, compressionLevel))
-                    {
-                        compressionStream.Write(messageData, 0, messageData.Length);
-                    }
-
-                    return output.ToArray();
-                }
-            }
-
-            // Should never reach here
-            throw new InvalidOperationException($"Could not find compression provider for '{compressionEncoding}'.");
-        }
-
         public static void AddProtocolHeaders(HttpResponse response)
         {
             response.ContentType = GrpcProtocolConstants.GrpcContentType;
@@ -214,10 +140,10 @@ namespace Grpc.AspNetCore.Server.Internal
                 // physically encoded as UTF-8 followed by percent-encoding.
                 escapedDetail = PercentEncodingHelpers.PercentEncode(status.Detail);
             }
-			else
-			{
-			    escapedDetail = null;
-			}
+            else
+            {
+                escapedDetail = null;
+            }
 
             destination[GrpcProtocolConstants.MessageTrailer] = escapedDetail;
         }
@@ -230,7 +156,7 @@ namespace Grpc.AspNetCore.Server.Internal
                 var feature = response.HttpContext.Features.Get<IHttpResponseTrailersFeature>();
                 if (feature?.Trailers == null || feature.Trailers.IsReadOnly)
                 {
-                    throw new InvalidOperationException("Trailers are not supported for this response.");
+                    throw new InvalidOperationException("Trailers are not supported for this response. The server may not support gRPC.");
                 }
 
                 return feature.Trailers;
@@ -285,6 +211,18 @@ namespace Grpc.AspNetCore.Server.Internal
 
                 values.Add(AuthProperty.Create(name, Encoding.UTF8.GetBytes(value)));
             }
+        }
+
+        internal static bool CanWriteCompressed(WriteOptions? writeOptions)
+        {
+            if (writeOptions == null)
+            {
+                return true;
+            }
+
+            var canCompress = (writeOptions.Flags & WriteFlags.NoCompress) != WriteFlags.NoCompress;
+
+            return canCompress;
         }
     }
 }

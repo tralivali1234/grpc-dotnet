@@ -25,11 +25,18 @@ namespace Grpc.AspNetCore.Server.Internal
     internal static class GrpcProtocolConstants
     {
         internal const string GrpcContentType = "application/grpc";
+        internal const string GrpcWebContentType = "application/grpc-web";
+        internal const string GrpcWebTextContentType = "application/grpc-web-text";
+
+        internal const string Http2Protocol = "HTTP/2"; // This is what Kestrel sets
+        internal const string Http20Protocol = "HTTP/2.0"; // This is what IIS sets
 
         internal const string TimeoutHeader = "grpc-timeout";
         internal const string MessageEncodingHeader = "grpc-encoding";
         internal const string MessageAcceptEncodingHeader = "grpc-accept-encoding";
-		
+
+        internal const string CompressionRequestAlgorithmHeader = "grpc-internal-encoding-request";
+
         internal const string StatusTrailer = "grpc-status";
         internal const string MessageTrailer = "grpc-message";
 
@@ -46,7 +53,7 @@ namespace Grpc.AspNetCore.Server.Internal
             HeaderNames.Host,
             HeaderNames.AcceptEncoding
         };
-		
+
         internal const string X509SubjectAlternativeNameId = "2.5.29.17";
         internal const string X509SubjectAlternativeNameKey = "x509_subject_alternative_name";
         internal const string X509CommonNameKey = "x509_common_name";

@@ -31,26 +31,36 @@ namespace Grpc.Net.Client.Internal
         where TRequest : class
         where TResponse : class
     {
+        // Getting logger name from generic type is slow
+        private const string LoggerName = "Grpc.Net.Client.Internal.HttpContentClientStreamReader";
+
         private static readonly Task<bool> FinishedTask = Task.FromResult(false);
 
         private readonly GrpcCall<TRequest, TResponse> _call;
+        private readonly ILogger _logger;
         private readonly object _moveNextLock;
 
+        public TaskCompletionSource<(HttpResponseMessage, Status?)> HttpResponseTcs { get; }
+
         private HttpResponseMessage? _httpResponse;
+        private string? _grpcEncoding;
         private Stream? _responseStream;
         private Task<bool>? _moveNextTask;
 
         public HttpContentClientStreamReader(GrpcCall<TRequest, TResponse> call)
         {
             _call = call;
+            _logger = call.Channel.LoggerFactory.CreateLogger(LoggerName);
             _moveNextLock = new object();
+
+            HttpResponseTcs = new TaskCompletionSource<(HttpResponseMessage, Status?)>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         // IAsyncStreamReader<T> should declare Current as nullable
         // Suppress warning when overriding interface definition
-#pragma warning disable CS8612 // Nullability of reference types in type doesn't match implicitly implemented member.
+#pragma warning disable CS8613 // Nullability of reference types in return type doesn't match implicitly implemented member.
         public TResponse? Current { get; private set; }
-#pragma warning restore CS8612 // Nullability of reference types in type doesn't match implicitly implemented member.
+#pragma warning restore CS8613 // Nullability of reference types in return type doesn't match implicitly implemented member.
 
         public void Dispose()
         {
@@ -58,15 +68,33 @@ namespace Grpc.Net.Client.Internal
 
         public Task<bool> MoveNext(CancellationToken cancellationToken)
         {
+            _call.EnsureNotDisposed();
+
             // HTTP response has finished
-            if (_call.ResponseFinished)
+            if (_call.CancellationToken.IsCancellationRequested)
             {
-                return FinishedTask;
+                if (!_call.Channel.ThrowOperationCanceledOnCancellation)
+                {
+                    return Task.FromException<bool>(_call.CreateCanceledStatusException());
+                }
+                else
+                {
+                    return Task.FromCanceled<bool>(_call.CancellationToken);
+                }
             }
 
-            if (_call.IsCancellationRequested)
+            if (_call.CallTask.IsCompletedSuccessfully)
             {
-                throw _call.CreateCanceledStatusException();
+                var status = _call.CallTask.Result;
+                if (status.StatusCode == StatusCode.OK)
+                {
+                    // Response is finished and it was successful so just return false
+                    return FinishedTask;
+                }
+                else
+                {
+                    return Task.FromException<bool>(_call.CreateRpcException(status));
+                }
             }
 
             lock (_moveNextLock)
@@ -76,8 +104,8 @@ namespace Grpc.Net.Client.Internal
                     // Pending move next need to be awaited first
                     if (IsMoveNextInProgressUnsynchronized)
                     {
-                        var ex = new InvalidOperationException("Cannot read next message because the previous read is in progress.");
-                        Log.ReadMessageError(_call.Logger, ex);
+                        var ex = new InvalidOperationException("Can't read the next message because the previous read is still in progress.");
+                        Log.ReadMessageError(_logger, ex);
                         return Task.FromException<bool>(ex);
                     }
 
@@ -109,29 +137,66 @@ namespace Grpc.Net.Client.Internal
 
                 if (_httpResponse == null)
                 {
-                    Debug.Assert(_call.SendTask != null);
-                    await _call.SendTask.ConfigureAwait(false);
+                    var (httpResponse, status) = await HttpResponseTcs.Task.ConfigureAwait(false);
+                    if (status != null && status.Value.StatusCode != StatusCode.OK)
+                    {
+                        throw _call.CreateFailureStatusException(status.Value);
+                    }
 
-                    Debug.Assert(_call.HttpResponse != null);
-                    _httpResponse = _call.HttpResponse;
+                    _httpResponse = httpResponse;
+                    _grpcEncoding = GrpcProtocolHelpers.GetGrpcEncoding(_httpResponse);
                 }
                 if (_responseStream == null)
                 {
-                    _responseStream = await _httpResponse.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                    try
+                    {
+                        _responseStream = await _httpResponse.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // The response was disposed while waiting for the content stream to start.
+                        // This will happen if there is no content stream (e.g. a streaming call finishes with no messages).
+                        // Treat this like a cancellation.
+                        throw new OperationCanceledException();
+                    }
                 }
 
-                Current = await _responseStream.ReadStreamedMessageAsync(_call.Logger, _call.Method.ResponseMarshaller.Deserializer, cancellationToken).ConfigureAwait(false);
+                Debug.Assert(_grpcEncoding != null, "Encoding should have been calculated from response.");
+
+                Current = await _call.ReadMessageAsync(
+                    _responseStream,
+                    _grpcEncoding,
+                    singleMessage: false,
+                    cancellationToken).ConfigureAwait(false);
                 if (Current == null)
                 {
                     // No more content in response so mark as finished
-                    _call.FinishResponse();
+                    var status = GrpcProtocolHelpers.GetResponseStatus(_httpResponse);
+                    _call.FinishResponse(status);
+                    if (status.StatusCode != StatusCode.OK)
+                    {
+                        throw _call.CreateFailureStatusException(status);
+                    }
+
                     return false;
                 }
 
+                GrpcEventSource.Log.MessageReceived();
                 return true;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (!_call.Channel.ThrowOperationCanceledOnCancellation)
             {
+                if (_call.ResponseFinished)
+                {
+                    // Call status will have been set before dispose.
+                    var status = await _call.CallTask.ConfigureAwait(false);
+                    if (status.StatusCode == StatusCode.OK)
+                    {
+                        // Return false to indicate that the stream is complete without a message.
+                        return false;
+                    }
+                }
+
                 throw _call.CreateCanceledStatusException();
             }
             finally

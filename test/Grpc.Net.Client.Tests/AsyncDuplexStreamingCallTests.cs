@@ -38,7 +38,7 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncDuplexStreamingCall_NoContent_NoMessagesReturned()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 HelloReply reply = new HelloReply
                 {
@@ -50,7 +50,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             var responseStream = call.ResponseStream;
 
@@ -64,7 +64,7 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncServerStreamingCall_MessagesReturnedTogether_MessagesReceived()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 HelloReply reply = new HelloReply
                 {
@@ -76,7 +76,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             var responseStream = call.ResponseStream;
 
@@ -92,11 +92,11 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var streamContent = new SyncPointMemoryStream();
 
-            PushStreamContent? content = null;
+            PushStreamContent<HelloRequest, HelloReply>? content = null;
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                content = (PushStreamContent)request.Content;
+                content = (PushStreamContent<HelloRequest, HelloReply>)request.Content;
                 await content.PushComplete.DefaultTimeout();
 
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, new StreamContent(streamContent));
@@ -104,7 +104,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             var requestStream = call.RequestStream;
             var responseStream = call.ResponseStream;
@@ -117,9 +117,23 @@ namespace Grpc.Net.Client.Tests
 
             Assert.IsNotNull(content);
             var requestContent = await content!.ReadAsStreamAsync().DefaultTimeout();
-            var requestMessage = await requestContent.ReadStreamedMessageAsync(NullLogger.Instance, TestHelpers.ServiceMethod.RequestMarshaller.Deserializer, CancellationToken.None).DefaultTimeout();
+            var requestMessage = await requestContent.ReadMessageAsync(
+                NullLogger.Instance,
+                ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
+                GrpcProtocolConstants.IdentityGrpcEncoding,
+                maximumMessageSize: null,
+                GrpcProtocolConstants.DefaultCompressionProviders,
+                singleMessage: false,
+                CancellationToken.None).AsTask().DefaultTimeout();
             Assert.AreEqual("1", requestMessage.Name);
-            requestMessage = await requestContent.ReadStreamedMessageAsync(NullLogger.Instance, TestHelpers.ServiceMethod.RequestMarshaller.Deserializer, CancellationToken.None).DefaultTimeout();
+            requestMessage = await requestContent.ReadMessageAsync(
+                NullLogger.Instance,
+                ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
+                GrpcProtocolConstants.IdentityGrpcEncoding,
+                maximumMessageSize: null,
+                GrpcProtocolConstants.DefaultCompressionProviders,
+                singleMessage: false,
+                CancellationToken.None).AsTask().DefaultTimeout();
             Assert.AreEqual("2", requestMessage.Name);
 
             Assert.IsNull(responseStream.Current);
@@ -127,7 +141,7 @@ namespace Grpc.Net.Client.Tests
             var moveNextTask1 = responseStream.MoveNext(CancellationToken.None);
             Assert.IsFalse(moveNextTask1.IsCompleted);
 
-            await streamContent.AddDataAndWait(await TestHelpers.GetResponseDataAsync(new HelloReply
+            await streamContent.AddDataAndWait(await ClientTestHelpers.GetResponseDataAsync(new HelloReply
             {
                 Message = "Hello world 1"
             }).DefaultTimeout()).DefaultTimeout();
@@ -139,7 +153,7 @@ namespace Grpc.Net.Client.Tests
             var moveNextTask2 = responseStream.MoveNext(CancellationToken.None);
             Assert.IsFalse(moveNextTask2.IsCompleted);
 
-            await streamContent.AddDataAndWait(await TestHelpers.GetResponseDataAsync(new HelloReply
+            await streamContent.AddDataAndWait(await ClientTestHelpers.GetResponseDataAsync(new HelloReply
             {
                 Message = "Hello world 2"
             }).DefaultTimeout()).DefaultTimeout();

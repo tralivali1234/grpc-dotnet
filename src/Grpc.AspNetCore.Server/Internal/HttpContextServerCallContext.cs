@@ -22,8 +22,9 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
-using Grpc.AspNetCore.Server.Features;
 using Grpc.Core;
+using Grpc.Shared;
+using Grpc.Shared.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
@@ -33,8 +34,6 @@ namespace Grpc.AspNetCore.Server.Internal
     internal sealed partial class HttpContextServerCallContext : ServerCallContext, IServerCallContextFeature
     {
         private static readonly AuthContext UnauthenticatedContext = new AuthContext(null, new Dictionary<string, List<AuthProperty>>());
-        private readonly ILogger _logger;
-
         private string? _peer;
         private Metadata? _requestHeaders;
         private Metadata? _responseTrailers;
@@ -42,23 +41,39 @@ namespace Grpc.AspNetCore.Server.Internal
         private AuthContext? _authContext;
         // Internal for tests
         internal ServerCallDeadlineManager? DeadlineManager;
+        private HttpContextSerializationContext? _serializationContext;
+        private DefaultDeserializationContext? _deserializationContext;
 
-        internal HttpContextServerCallContext(HttpContext httpContext, GrpcServiceOptions serviceOptions, ILogger logger)
+        internal HttpContextServerCallContext(HttpContext httpContext, MethodOptions options, Type requestType, Type responseType, ILogger logger)
         {
             HttpContext = httpContext;
-            ServiceOptions = serviceOptions;
-            _logger = logger;
+            Options = options;
+            RequestType = requestType;
+            ResponseType = responseType;
+            Logger = logger;
         }
 
+        internal ILogger Logger { get; }
         internal HttpContext HttpContext { get; }
-        internal GrpcServiceOptions ServiceOptions { get; }
+        internal MethodOptions Options { get; }
+        internal Type RequestType { get; }
+        internal Type ResponseType { get; }
         internal string? ResponseGrpcEncoding { get; private set; }
+
+        internal HttpContextSerializationContext SerializationContext
+        {
+            get => _serializationContext ??= new HttpContextSerializationContext(this);
+        }
+        internal DefaultDeserializationContext DeserializationContext
+        {
+            get => _deserializationContext ??= new DefaultDeserializationContext();
+        }
 
         internal bool HasResponseTrailers => _responseTrailers != null;
 
-        protected override string? MethodCore => HttpContext.Request.Path.Value;
+        protected override string MethodCore => HttpContext.Request.Path.Value;
 
-        protected override string? HostCore => HttpContext.Request.Host.Value;
+        protected override string HostCore => HttpContext.Request.Host.Value;
 
         protected override string? PeerCore
         {
@@ -142,7 +157,7 @@ namespace Grpc.AspNetCore.Server.Internal
         {
             if (ex is RpcException rpcException)
             {
-                Log.RpcConnectionError(_logger, rpcException.StatusCode, ex);
+                GrpcServerLog.RpcConnectionError(Logger, rpcException.StatusCode, ex);
 
                 // There are two sources of metadata entries on the server-side:
                 // 1. serverCallContext.ResponseTrailers
@@ -158,9 +173,9 @@ namespace Grpc.AspNetCore.Server.Internal
             }
             else
             {
-                Log.ErrorExecutingServiceMethod(_logger, method, ex);
+                GrpcServerLog.ErrorExecutingServiceMethod(Logger, method, ex);
 
-                var message = ErrorMessageHelper.BuildErrorMessage("Exception was thrown by handler.", ex, ServiceOptions.EnableDetailedErrors);
+                var message = ErrorMessageHelper.BuildErrorMessage("Exception was thrown by handler.", ex, Options.EnableDetailedErrors);
                 _status = new Status(StatusCode.Unknown, message);
             }
 
@@ -169,6 +184,8 @@ namespace Grpc.AspNetCore.Server.Internal
             {
                 HttpContext.Response.ConsolidateTrailers(this);
             }
+
+            LogCallEnd();
 
             DeadlineManager?.SetCallComplete();
         }
@@ -254,7 +271,23 @@ namespace Grpc.AspNetCore.Server.Internal
                 HttpContext.Response.ConsolidateTrailers(this);
             }
 
+            LogCallEnd();
+
             DeadlineManager?.SetCallComplete();
+        }
+
+        private void LogCallEnd()
+        {
+            var activity = GetHostActivity();
+            if (activity != null)
+            {
+                activity.AddTag(GrpcServerConstants.ActivityStatusCodeTag, _status.StatusCode.ToTrailerString());
+            }
+            if (_status.StatusCode != StatusCode.OK)
+            {
+                GrpcEventSource.Log.CallFailed(_status.StatusCode);
+            }
+            GrpcEventSource.Log.CallStop();
         }
 
         protected override WriteOptions? WriteOptionsCore { get; set; }
@@ -305,23 +338,43 @@ namespace Grpc.AspNetCore.Server.Internal
             {
                 foreach (var entry in responseHeaders)
                 {
-                    if (entry.IsBinary)
+                    if (entry.Key == GrpcProtocolConstants.CompressionRequestAlgorithmHeader)
                     {
-                        HttpContext.Response.Headers[entry.Key] = Convert.ToBase64String(entry.ValueBytes);
+                        // grpc-internal-encoding-request is used in the server to set message compression
+                        // on a per-call bassis.
+                        // 'grpc-encoding' is sent even if WriteOptions.Flags = NoCompress. In that situation
+                        // individual messages will not be written with compression.
+                        ResponseGrpcEncoding = entry.Value;
+                        HttpContext.Response.Headers[GrpcProtocolConstants.MessageEncodingHeader] = ResponseGrpcEncoding;
                     }
                     else
                     {
-                        HttpContext.Response.Headers[entry.Key] = entry.Value;
+                        if (entry.IsBinary)
+                        {
+                            HttpContext.Response.Headers[entry.Key] = Convert.ToBase64String(entry.ValueBytes);
+                        }
+                        else
+                        {
+                            HttpContext.Response.Headers[entry.Key] = entry.Value;
+                        }
                     }
                 }
             }
 
-            return HttpContext.Response.Body.FlushAsync();
+            return HttpContext.Response.BodyWriter.FlushAsync().GetAsTask();
         }
 
         // Clock is for testing
         public void Initialize(ISystemClock? clock = null)
         {
+            var activity = GetHostActivity();
+            if (activity != null)
+            {
+                activity.AddTag(GrpcServerConstants.ActivityMethodTag, MethodCore);
+            }
+
+            GrpcEventSource.Log.CallStart(MethodCore);
+
             var timeout = GetTimeout();
 
             if (timeout != TimeSpan.Zero)
@@ -329,7 +382,7 @@ namespace Grpc.AspNetCore.Server.Internal
                 DeadlineManager = new ServerCallDeadlineManager(clock ?? SystemClock.Instance, timeout, DeadlineExceededAsync, HttpContext.RequestAborted);
             }
 
-            var serviceDefaultCompression = ServiceOptions.ResponseCompressionAlgorithm;
+            var serviceDefaultCompression = Options.ResponseCompressionAlgorithm;
             if (serviceDefaultCompression != null &&
                 !string.Equals(serviceDefaultCompression, GrpcProtocolConstants.IdentityGrpcEncoding, StringComparison.Ordinal) &&
                 IsEncodingInRequestAcceptEncoding(serviceDefaultCompression))
@@ -344,6 +397,24 @@ namespace Grpc.AspNetCore.Server.Internal
             HttpContext.Response.Headers.Append(GrpcProtocolConstants.MessageEncodingHeader, ResponseGrpcEncoding);
         }
 
+        private Activity? GetHostActivity()
+        {
+            var activity = Activity.Current;
+            while (activity != null)
+            {
+                // We only want to add gRPC metadata to the host activity
+                // Search parent activities in case a new activity was started in middleware before gRPC endpoint is invoked
+                if (string.Equals(activity.OperationName, GrpcServerConstants.HostActivityName, StringComparison.Ordinal))
+                {
+                    return activity;
+                }
+
+                activity = activity.Parent;
+            }
+
+            return null;
+        }
+
         private TimeSpan GetTimeout()
         {
             if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.TimeoutHeader, out var values))
@@ -356,7 +427,7 @@ namespace Grpc.AspNetCore.Server.Internal
                     return timeout;
                 }
 
-                Log.InvalidTimeoutIgnored(_logger, values);
+                GrpcServerLog.InvalidTimeoutIgnored(Logger, values);
             }
 
             return TimeSpan.Zero;
@@ -366,7 +437,8 @@ namespace Grpc.AspNetCore.Server.Internal
         {
             try
             {
-                Log.DeadlineExceeded(_logger, GetTimeout());
+                GrpcServerLog.DeadlineExceeded(Logger, GetTimeout());
+                GrpcEventSource.Log.CallDeadlineExceeded();
 
                 var status = new Status(StatusCode.DeadlineExceeded, "Deadline Exceeded");
 
@@ -377,7 +449,7 @@ namespace Grpc.AspNetCore.Server.Internal
 
                 // Immediately send remaining response content and trailers
                 // If feature is null then reset/abort will still end request, but response won't have trailers
-                var completionFeature = HttpContext.Features.Get<IHttpResponseCompletionFeature>();
+                var completionFeature = HttpContext.Features.Get<IHttpResponseBodyFeature>();
                 if (completionFeature != null)
                 {
                     await completionFeature.CompleteAsync();
@@ -385,20 +457,23 @@ namespace Grpc.AspNetCore.Server.Internal
 
                 // HttpResetFeature should always be set on context,
                 // but in case it isn't, fall back to HttpContext.Abort.
-                // Abort will send error code INTERNAL_ERROR instead of NO_ERROR
+                // Abort will send error code INTERNAL_ERROR instead of NO_ERROR.
                 var resetFeature = HttpContext.Features.Get<IHttpResetFeature>();
                 if (resetFeature != null)
                 {
+                    GrpcServerLog.ResettingResponse(Logger, GrpcProtocolConstants.ResetStreamNoError);
                     resetFeature.Reset(GrpcProtocolConstants.ResetStreamNoError);
                 }
                 else
                 {
+                    // Note that some clients will fail with error code INTERNAL_ERROR.
+                    GrpcServerLog.AbortingResponse(Logger);
                     HttpContext.Abort();
                 }
             }
             catch (Exception ex)
             {
-                Log.DeadlineCancellationError(_logger, ex);
+                GrpcServerLog.DeadlineCancellationError(Logger, ex);
             }
         }
 
@@ -421,18 +496,27 @@ namespace Grpc.AspNetCore.Server.Internal
                 while (true)
                 {
                     var separatorIndex = acceptEncoding.IndexOf(',');
-                    if (separatorIndex == -1)
-                    {
-                        break;
-                    }
 
-                    var segment = acceptEncoding.Slice(0, separatorIndex);
-                    acceptEncoding = acceptEncoding.Slice(separatorIndex);
+                    ReadOnlySpan<char> segment;
+                    if (separatorIndex != -1)
+                    {
+                        segment = acceptEncoding.Slice(0, separatorIndex);
+                        acceptEncoding = acceptEncoding.Slice(separatorIndex + 1);
+                    }
+                    else
+                    {
+                        segment = acceptEncoding;
+                    }
 
                     // Check segment
                     if (segment.SequenceEqual(encoding))
                     {
                         return true;
+                    }
+
+                    if (separatorIndex == -1)
+                    {
+                        break;
                     }
                 }
 
@@ -452,15 +536,8 @@ namespace Grpc.AspNetCore.Server.Internal
 
             if (!IsEncodingInRequestAcceptEncoding(ResponseGrpcEncoding))
             {
-                Log.EncodingNotInAcceptEncoding(_logger, ResponseGrpcEncoding);
+                GrpcServerLog.EncodingNotInAcceptEncoding(Logger, ResponseGrpcEncoding);
             }
-        }
-
-        internal bool CanWriteCompressed()
-        {
-            var canCompress = ((WriteOptions?.Flags ?? default) & WriteFlags.NoCompress) != WriteFlags.NoCompress;
-
-            return canCompress;
         }
     }
 }

@@ -18,19 +18,21 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.AspNetCore.Server.Internal;
+using Grpc.AspNetCore.Server.Tests.Infrastructure;
 using Grpc.Core;
 using Grpc.Tests.Shared;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Http.Internal;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging.Testing;
 using NUnit.Framework;
 
@@ -294,11 +296,6 @@ namespace Grpc.AspNetCore.Server.Tests
             Assert.AreEqual(Convert.ToBase64String(trailerBytes), responseTrailers["trailer-bin"]);
         }
 
-        private class TestHttpResponseTrailersFeature : IHttpResponseTrailersFeature
-        {
-            public IHeaderDictionary Trailers { get; set; } = new HeaderDictionary();
-        }
-
         private class TestHttpResponseFeature : HttpResponseFeature
         {
             private readonly bool _hasStarted;
@@ -440,19 +437,18 @@ namespace Grpc.AspNetCore.Server.Tests
 
             var httpContext = new DefaultHttpContext();
             httpContext.Features.Set<IHttpRequestLifetimeFeature>(new TestHttpRequestLifetimeFeature(throwError: true));
-            httpContext.Request.Headers[GrpcProtocolConstants.TimeoutHeader] = "1S";
+            httpContext.Request.Headers[GrpcProtocolConstants.TimeoutHeader] = "100m";
             var context = CreateServerCallContext(httpContext, testLogger);
             context.Initialize();
 
             // Act
-            while (context.Status.StatusCode != StatusCode.DeadlineExceeded)
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(100));
-            }
+            await TestHelpers.AssertIsTrueRetryAsync(
+                () => context.Status.StatusCode == StatusCode.DeadlineExceeded,
+                "StatusCode not set to DeadlineExceeded.");
 
             // Assert
             var write = testSink.Writes.Single(w => w.EventId.Name == "DeadlineExceeded");
-            Assert.AreEqual("Request with timeout of 00:00:01 has exceeded its deadline.", write.State.ToString());
+            Assert.AreEqual("Request with timeout of 00:00:00.1000000 has exceeded its deadline.", write.State.ToString());
 
             write = testSink.Writes.Single(w => w.EventId.Name == "DeadlineCancellationError");
             Assert.AreEqual("Error occurred while trying to cancel the request due to deadline exceeded.", write.State.ToString());
@@ -537,8 +533,7 @@ namespace Grpc.AspNetCore.Server.Tests
         {
             // Arrange
             var httpContext = new DefaultHttpContext();
-            var httpRequest = new DefaultHttpRequest(httpContext);
-            httpRequest.Headers[headerName] = "value";
+            httpContext.Request.Headers[headerName] = "value";
             var serverCallContext = CreateServerCallContext(httpContext);
 
             // Act
@@ -573,7 +568,7 @@ namespace Grpc.AspNetCore.Server.Tests
             var httpResetFeature = new TestHttpResetFeature();
             var httpContext = new DefaultHttpContext();
             httpContext.Request.Headers[GrpcProtocolConstants.TimeoutHeader] = "200m";
-            httpContext.Features.Set<IHttpResponseCompletionFeature>(new TestBlockingHttpResponseCompletionFeature(syncPoint));
+            httpContext.Features.Set<IHttpResponseBodyFeature>(new TestBlockingHttpResponseCompletionFeature(syncPoint));
             httpContext.Features.Set<IHttpResetFeature>(httpResetFeature);
 
             var serverCallContext = CreateServerCallContext(httpContext);
@@ -612,7 +607,7 @@ namespace Grpc.AspNetCore.Server.Tests
             var httpResetFeature = new TestHttpResetFeature();
             var httpContext = new DefaultHttpContext();
             httpContext.Request.Headers[GrpcProtocolConstants.TimeoutHeader] = "200m";
-            httpContext.Features.Set<IHttpResponseCompletionFeature>(new TestBlockingHttpResponseCompletionFeature(syncPoint));
+            httpContext.Features.Set<IHttpResponseBodyFeature>(new TestBlockingHttpResponseCompletionFeature(syncPoint));
             httpContext.Features.Set<IHttpResetFeature>(httpResetFeature);
 
             var testSink = new TestSink();
@@ -637,9 +632,89 @@ namespace Grpc.AspNetCore.Server.Tests
             await disposeTask;
         }
 
+        [Test]
+        public void Initialize_MethodInPath_SetsMethodOnActivity()
+        {
+            using (new ActivityReplacer(GrpcServerConstants.HostActivityName))
+            {
+                // Arrange
+                var httpContext = new DefaultHttpContext();
+                httpContext.Request.Path = "/Package.Service/Method";
+                var context = CreateServerCallContext(httpContext);
+
+                // Act
+                context.Initialize();
+
+                // Assert
+                Assert.AreEqual("/Package.Service/Method", Activity.Current.Tags.Single(t => t.Key == GrpcServerConstants.ActivityMethodTag).Value);
+            }
+        }
+
+        [Test]
+        public void Initialize_MethodInPathAndChildActivity_SetsMethodOnActivity()
+        {
+            using (new ActivityReplacer(GrpcServerConstants.HostActivityName))
+            {
+                // Arrange
+                var httpContext = new DefaultHttpContext();
+                httpContext.Request.Path = "/Package.Service/Method";
+                var context = CreateServerCallContext(httpContext);
+
+                // Act
+                using (new ActivityReplacer("ChildActivity"))
+                {
+                    context.Initialize();
+                }
+
+                // Assert
+                Assert.AreEqual("/Package.Service/Method", Activity.Current.Tags.Single(t => t.Key == GrpcServerConstants.ActivityMethodTag).Value);
+            }
+        }
+
+        [Test]
+        public async Task EndCallAsync_StatusSet_SetsStatusOnActivity()
+        {
+            using (new ActivityReplacer(GrpcServerConstants.HostActivityName))
+            {
+                // Arrange
+                var httpContext = new DefaultHttpContext();
+                var context = CreateServerCallContext(httpContext);
+                context.Status = new Status(StatusCode.ResourceExhausted, string.Empty);
+
+                // Act
+                context.Initialize();
+                await context.EndCallAsync();
+
+                // Assert
+                Assert.AreEqual("8", Activity.Current.Tags.Single(t => t.Key == GrpcServerConstants.ActivityStatusCodeTag).Value);
+            }
+        }
+
+        [Test]
+        public async Task ProcessHandlerErrorAsync_Exception_SetsStatusOnActivity()
+        {
+            using (new ActivityReplacer(GrpcServerConstants.HostActivityName))
+            {
+                // Arrange
+                var httpContext = new DefaultHttpContext();
+                var context = CreateServerCallContext(httpContext);
+                context.Status = new Status(StatusCode.ResourceExhausted, string.Empty);
+
+                // Act
+                context.Initialize();
+                await context.ProcessHandlerErrorAsync(new Exception(), "MethodName");
+
+                // Assert
+                Assert.AreEqual("2", Activity.Current.Tags.Single(t => t.Key == GrpcServerConstants.ActivityStatusCodeTag).Value);
+            }
+        }
+
         private HttpContextServerCallContext CreateServerCallContext(HttpContext httpContext, ILogger? logger = null)
         {
-            return new HttpContextServerCallContext(httpContext, new GrpcServiceOptions(), logger ?? NullLogger.Instance);
+            return HttpContextServerCallContextHelper.CreateServerCallContext(
+                httpContext: httpContext,
+                logger: logger,
+                initialize: false);
         }
 
         private class TestHttpResetFeature : IHttpResetFeature
@@ -652,7 +727,7 @@ namespace Grpc.AspNetCore.Server.Tests
             }
         }
 
-        private class TestBlockingHttpResponseCompletionFeature : IHttpResponseCompletionFeature
+        private class TestBlockingHttpResponseCompletionFeature : IHttpResponseBodyFeature
         {
             private readonly SyncPoint _syncPoint;
 
@@ -661,35 +736,27 @@ namespace Grpc.AspNetCore.Server.Tests
                 _syncPoint = syncPoint;
             }
 
+            public Stream Stream => throw new NotImplementedException();
+            public PipeWriter Writer => throw new NotImplementedException();
+
             public Task CompleteAsync()
             {
                 return _syncPoint.WaitToContinue();
             }
-        }
 
-        private class TestBlockingHttpRequestLifetimeFeature : IHttpRequestLifetimeFeature
-        {
-            private readonly CancellationTokenSource _cts;
-
-            public TestBlockingHttpRequestLifetimeFeature()
+            public void DisableBuffering()
             {
-                _cts = new CancellationTokenSource();
+                throw new NotImplementedException();
             }
 
-            public CancellationToken RequestAborted
+            public Task SendFileAsync(string path, long offset, long? count, CancellationToken cancellationToken = default)
             {
-                get => _cts.Token;
-                set => throw new NotSupportedException();
+                throw new NotImplementedException();
             }
 
-            public void Abort()
+            public Task StartAsync(CancellationToken cancellationToken = default)
             {
-                _cts.Token.WaitHandle.WaitOne();
-            }
-
-            public void CancelBlocking()
-            {
-                _cts.Cancel();
+                throw new NotImplementedException();
             }
         }
 

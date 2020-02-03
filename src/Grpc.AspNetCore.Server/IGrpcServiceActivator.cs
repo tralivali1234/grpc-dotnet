@@ -16,6 +16,9 @@
 
 #endregion
 
+using System;
+using System.Threading.Tasks;
+
 namespace Grpc.AspNetCore.Server
 {
     /// <summary>
@@ -27,13 +30,14 @@ namespace Grpc.AspNetCore.Server
         /// <summary>
         /// Creates a service.
         /// </summary>
+        /// <param name="serviceProvider">The service provider.</param>
         /// <returns>The created service.</returns>
-        TGrpcService Create();
+        GrpcActivatorHandle<TGrpcService> Create(IServiceProvider serviceProvider);
 
         /// <summary>
         /// Releases the specified service.
         /// </summary>
         /// <param name="service">The service to release.</param>
-        void Release(TGrpcService service);
+        ValueTask ReleaseAsync(GrpcActivatorHandle<TGrpcService> service);
     }
 }

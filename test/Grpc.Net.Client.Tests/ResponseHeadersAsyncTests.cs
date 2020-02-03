@@ -38,14 +38,14 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncUnaryCall_Success_ResponseHeadersPopulated()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 HelloReply reply = new HelloReply
                 {
                     Message = "Hello world"
                 };
 
-                var streamContent = await TestHelpers.CreateResponseContent(reply).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Server.Add(new ProductInfoHeaderValue("TestName", "1.0"));
                 response.Headers.Add("custom", "ABC");
@@ -55,7 +55,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var responseHeaders1 = await call.ResponseHeadersAsync.DefaultTimeout();
             var responseHeaders2 = await call.ResponseHeadersAsync.DefaultTimeout();
 
@@ -77,9 +77,9 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncClientStreamingCall_Success_ResponseHeadersPopulated()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Add("custom", "ABC");
                 return response;
@@ -87,7 +87,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
             var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
             // Assert
@@ -99,9 +99,9 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncDuplexStreamingCall_Success_ResponseHeadersPopulated()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Add("custom", "ABC");
                 return response;
@@ -109,7 +109,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
             var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
             // Assert
@@ -121,9 +121,9 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncServerStreamingCall_Success_ResponseHeadersPopulated()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Add("custom", "ABC");
                 return response;
@@ -131,7 +131,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
             // Assert
@@ -140,34 +140,36 @@ namespace Grpc.Net.Client.Tests
         }
 
         [Test]
-        public void AsyncServerStreamingCall_ErrorSendingRequest_ReturnsError()
+        public async Task AsyncServerStreamingCall_ErrorSendingRequest_ReturnsError()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 return Task.FromException<HttpResponseMessage>(new Exception("An error!"));
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
-            var ex = Assert.CatchAsync<Exception>(() => call.ResponseHeadersAsync);
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
 
             // Assert
-            Assert.AreEqual("An error!", ex.Message);
+            Assert.AreEqual(StatusCode.Internal, ex.StatusCode);
+            Assert.AreEqual("Error starting gRPC call: An error!", ex.Status.Detail);
+            Assert.AreEqual(StatusCode.Internal, call.GetStatus().StatusCode);
         }
 
         [Test]
-        public void AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ReturnsError()
+        public async Task AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ReturnsError()
         {
             // Arrange
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var httpClient = TestHelpers.CreateTestClient(async (request, ct) =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async (request, ct) =>
             {
                 await tcs.Task.DefaultTimeout();
                 ct.ThrowIfCancellationRequested();
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Add("custom", "ABC");
                 return response;
@@ -175,51 +177,84 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             call.Dispose();
             tcs.TrySetResult(true);
 
             // Assert
-            Assert.ThrowsAsync<ObjectDisposedException>(() => call.ResponseHeadersAsync);
+            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
+            Assert.AreEqual(StatusCode.Cancelled, ex.StatusCode);
+            Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
         }
 
         [Test]
-        public void AsyncClientStreamingCall_NotFoundStatus_ThrowsError()
+        public async Task AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ThrowOperationCanceledOnCancellation_ReturnsError()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var httpClient = ClientTestHelpers.CreateTestClient(async (request, ct) =>
+            {
+                await tcs.Task.DefaultTimeout();
+                ct.ThrowIfCancellationRequested();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+                response.Headers.Add("custom", "ABC");
+                return response;
+            });
+            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.ThrowOperationCanceledOnCancellation = true);
+
+            // Act
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            call.Dispose();
+            tcs.TrySetResult(true);
+
+            // Assert
+            await ExceptionAssert.ThrowsAsync<OperationCanceledException>(() => call.ResponseHeadersAsync).DefaultTimeout();
+            Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
+        }
+
+        [Test]
+        public async Task AsyncClientStreamingCall_NotFoundStatus_ResponseHeadersPopulated()
+        {
+            // Arrange
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.NotFound);
+                response.Headers.Add("custom", "ABC");
                 return Task.FromResult(response);
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () => await call.ResponseHeadersAsync.DefaultTimeout());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
             // Assert
-            Assert.AreEqual("Bad gRPC response. Expected HTTP status code 200. Got status code: 404", ex.Message);
+            var header = responseHeaders.Single(h => h.Key == "custom");
+            Assert.AreEqual("ABC", header.Value);
         }
 
         [Test]
-        public void AsyncClientStreamingCall_InvalidContentType_ThrowsError()
+        public async Task AsyncClientStreamingCall_InvalidContentType_ResponseHeadersPopulated()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK);
+                response.Headers.Add("custom", "ABC");
                 response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
                 return Task.FromResult(response);
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () => await call.ResponseHeadersAsync.DefaultTimeout());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
             // Assert
-            Assert.AreEqual("Bad gRPC response. Invalid content-type value: text/plain", ex.Message);
+            var header = responseHeaders.Single(h => h.Key == "custom");
+            Assert.AreEqual("ABC", header.Value);
         }
     }
 }

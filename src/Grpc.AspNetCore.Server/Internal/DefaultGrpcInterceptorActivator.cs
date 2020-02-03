@@ -18,79 +18,55 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Grpc.Core.Interceptors;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Grpc.AspNetCore.Server.Internal
 {
-    internal class DefaultGrpcInterceptorActivator<TInterceptor> : IGrpcInterceptorActivator<TInterceptor> where TInterceptor : Interceptor
+    internal sealed class DefaultGrpcInterceptorActivator<TInterceptor> : IGrpcInterceptorActivator<TInterceptor> where TInterceptor : Interceptor
     {
-        private readonly IServiceProvider _serviceProvider;
-
-        // An activator could create multiple interceptor instances of one type for a request
-        // Optimize for one instance and store it in a field
-        // When there are multiple interceptors then store in a set
-        private Interceptor? _createdInterceptor;
-        private HashSet<Interceptor>? _createdInterceptors;
-
-        public DefaultGrpcInterceptorActivator(IServiceProvider serviceProvider)
+        public GrpcActivatorHandle<Interceptor> Create(IServiceProvider serviceProvider, InterceptorRegistration interceptorRegistration)
         {
-            _serviceProvider = serviceProvider;
-        }
-
-        public Interceptor Create(params object[] args)
-        {
-            if (args.Length == 0)
+            if (interceptorRegistration.Arguments.Count == 0)
             {
-                var globalInterceptor = _serviceProvider.GetService<TInterceptor>();
+                var globalInterceptor = serviceProvider.GetService<TInterceptor>();
                 if (globalInterceptor != null)
                 {
-                    return globalInterceptor;
+                    return new GrpcActivatorHandle<Interceptor>(globalInterceptor, created: false, state: null);
                 }
             }
 
-            var interceptor = ActivatorUtilities.CreateInstance<TInterceptor>(_serviceProvider, args);
+            // Cache factory on registration
+            var factory = interceptorRegistration.GetFactory();
 
-            if (_createdInterceptor == null)
-            {
-                _createdInterceptor = interceptor;
-            }
-            else
-            {
-                // Multiple interceptors of this type in the request pipeline
-                // Store references in a set
-                if (_createdInterceptors == null)
-                {
-                    _createdInterceptors = new HashSet<Interceptor>();
-                    _createdInterceptors.Add(_createdInterceptor);
-                    _createdInterceptor = null;
-                }
+            var interceptor = (TInterceptor)factory(serviceProvider, interceptorRegistration._args);
 
-                _createdInterceptors.Add(interceptor);
-            }
-
-            return interceptor;
+            return new GrpcActivatorHandle<Interceptor>(interceptor, created: true, state: null);
         }
 
-        public void Release(Interceptor interceptor)
+        public ValueTask ReleaseAsync(GrpcActivatorHandle<Interceptor> interceptor)
         {
-            if (interceptor == null)
+            if (interceptor.Instance == null)
             {
-                throw new ArgumentNullException(nameof(interceptor));
+                throw new ArgumentException("Interceptor instance is null.", nameof(interceptor));
             }
 
-            if (interceptor is IDisposable disposableInterceptor)
+            if (interceptor.Created)
             {
-                if (_createdInterceptor == interceptor)
+                if (interceptor.Instance is IAsyncDisposable asyncDisposableInterceptor)
                 {
-                    _createdInterceptor = null;
-                    disposableInterceptor.Dispose();
+                    return asyncDisposableInterceptor.DisposeAsync();
                 }
-                else if (_createdInterceptors != null && _createdInterceptors.Remove(interceptor))
+
+                if (interceptor.Instance is IDisposable disposableInterceptor)
                 {
                     disposableInterceptor.Dispose();
+                    return default;
                 }
             }
+
+            return default;
         }
     }
 }

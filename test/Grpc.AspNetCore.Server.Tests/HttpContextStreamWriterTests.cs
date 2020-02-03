@@ -19,7 +19,6 @@
 using System.IO;
 using System.IO.Pipelines;
 using System.Threading.Tasks;
-using Google.Protobuf;
 using Greet;
 using Grpc.AspNetCore.Server.Internal;
 using Grpc.Core;
@@ -40,9 +39,9 @@ namespace Grpc.AspNetCore.Server.Tests
             var ms = new MemoryStream();
 
             var httpContext = new DefaultHttpContext();
-            httpContext.Features.Set<IResponseBodyPipeFeature>(new TestResponseBodyPipeFeature(PipeWriter.Create(ms)));
+            httpContext.Features.Set<IHttpResponseBodyFeature>(new TestResponseBodyFeature(PipeWriter.Create(ms)));
             var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext);
-            var writer = new HttpContextStreamWriter<HelloReply>(serverCallContext, (message) => message.ToByteArray());
+            var writer = new HttpContextStreamWriter<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualSerializer);
 
             // Act 1
             await writer.WriteAsync(new HelloReply
@@ -78,9 +77,9 @@ namespace Grpc.AspNetCore.Server.Tests
             var ms = new MemoryStream();
 
             var httpContext = new DefaultHttpContext();
-            httpContext.Features.Set<IResponseBodyPipeFeature>(new TestResponseBodyPipeFeature(PipeWriter.Create(ms)));
+            httpContext.Features.Set<IHttpResponseBodyFeature>(new TestResponseBodyFeature(PipeWriter.Create(ms)));
             var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext);
-            var writer = new HttpContextStreamWriter<HelloReply>(serverCallContext, (message) => message.ToByteArray());
+            var writer = new HttpContextStreamWriter<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualSerializer);
             serverCallContext.WriteOptions = new WriteOptions(WriteFlags.BufferHint);
 
             // Act 1 

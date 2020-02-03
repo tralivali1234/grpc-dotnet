@@ -17,10 +17,18 @@
 #endregion
 
 using System;
+using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading.Tasks;
 using Greet;
+using Grpc.Core;
+using Grpc.Net.Client;
+using Grpc.Net.Client.Internal;
 using Grpc.Net.ClientFactory;
+using Grpc.Tests.Shared;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
@@ -34,23 +42,23 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
         {
             // Arrange
             var baseAddress = new Uri("http://localhost");
-            var certificate = new X509Certificate2();
 
-            ServiceCollection services = new ServiceCollection();
+            var services = new ServiceCollection();
             services
                 .AddGrpcClient<Greeter.GreeterClient>(o =>
                 {
-                    o.BaseAddress = baseAddress;
-                });
+                    o.Address = baseAddress;
+                })
+                .AddHttpMessageHandler(() => ClientTestHelpers.CreateTestMessageHandler(new HelloReply()));
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             // Act
             var optionsMonitor = serviceProvider.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>();
             var options = optionsMonitor.Get(nameof(Greeter.GreeterClient));
 
             // Assert
-            Assert.AreEqual(baseAddress, options.BaseAddress);
+            Assert.AreEqual(baseAddress, options.Address);
         }
 
         [Test]
@@ -60,19 +68,21 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
             var baseAddress1 = new Uri("http://localhost");
             var baseAddress2 = new Uri("http://contoso");
 
-            ServiceCollection services = new ServiceCollection();
+            var services = new ServiceCollection();
             services
                 .AddGrpcClient<Greeter.GreeterClient>("First", o =>
                 {
-                    o.BaseAddress = baseAddress1;
-                });
+                    o.Address = baseAddress1;
+                })
+                .AddHttpMessageHandler(() => ClientTestHelpers.CreateTestMessageHandler(new HelloReply()));
             services
                 .AddGrpcClient<Greeter.GreeterClient>("Second", o =>
                 {
-                    o.BaseAddress = baseAddress2;
-                });
+                    o.Address = baseAddress2;
+                })
+                .AddHttpMessageHandler(() => ClientTestHelpers.CreateTestMessageHandler(new HelloReply()));
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             // Act
             var optionsMonitor = serviceProvider.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>();
@@ -80,8 +90,8 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
             var options2 = optionsMonitor.Get("Second");
 
             // Assert
-            Assert.AreEqual(baseAddress1, options1.BaseAddress);
-            Assert.AreEqual(baseAddress2, options2.BaseAddress);
+            Assert.AreEqual(baseAddress1, options1.Address);
+            Assert.AreEqual(baseAddress2, options2.Address);
         }
 
         [Test]
@@ -93,11 +103,11 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
             var services = new ServiceCollection();
             services.AddGrpcClient<Greeter.GreeterClient>(o =>
             {
-                o.BaseAddress = baseAddress;
+                o.Address = baseAddress;
             });
 
             // Act
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             // Assert
             using (var scope = serviceProvider.CreateScope())
@@ -107,46 +117,60 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
         }
 
         [Test]
-        public void AddGrpcClient_AddsLiteClientBaseClient_Succeeds()
+        public void AddGrpcClient_AddSameClientTwice_MergeConfiguration()
         {
             // Arrange
-            var baseAddress = new Uri("http://localhost");
-
             var services = new ServiceCollection();
-            services.AddGrpcClient<CoreGreet.Greeter.GreeterClient>(o =>
-            {
-                o.BaseAddress = baseAddress;
-            });
+            services
+                .AddGrpcClient<Greeter.GreeterClient>(options =>
+                {
+                    options.Address = new Uri("http://contoso");
+                });
+            services
+                .AddGrpcClient<Greeter.GreeterClient>(options =>
+                {
+                    options.Interceptors.Add(new CallbackInterceptor(o => { }));
+                });
 
             // Act
-            var serviceProvider = services.BuildServiceProvider();
-
-            // Assert
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
             using (var scope = serviceProvider.CreateScope())
             {
-                Assert.IsNotNull(serviceProvider.GetRequiredService<CoreGreet.Greeter.GreeterClient>());
+                var optionsMonitor = serviceProvider.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>();
+                var options = optionsMonitor.Get(nameof(Greeter.GreeterClient));
+
+                // Assert
+                Assert.AreEqual("http://contoso", options.Address!.OriginalString);
+                Assert.AreEqual(1, options.Interceptors.Count);
             }
         }
 
         [Test]
-        public void AddGrpcClient_AddsNonCompatibleClient_Throws()
+        public void AddGrpcClient_AddDifferentClientsWithSameName_ThrowsError()
         {
             // Arrange
-            var baseAddress = new Uri("http://localhost");
-
             var services = new ServiceCollection();
-            services.AddGrpcClient<GrpcClientServiceExtensionsTests>(o =>
-            {
-                o.BaseAddress = baseAddress;
-            });
+            services.AddGrpcClient<Greeter.GreeterClient>();
 
             // Act
-            var serviceProvider = services.BuildServiceProvider();
+            var ex = Assert.Throws<InvalidOperationException>(() => services.AddGrpcClient<GreeterClient>());
 
-            using (var scope = serviceProvider.CreateScope())
+            // Assert
+            Assert.AreEqual(
+                "The gRPC client factory already has a registered client with the name 'GreeterClient', bound to the type 'Greet.Greeter+GreeterClient'. " +
+                "Client names are computed based on the type name without considering the namespace ('GreeterClient'). Use an overload of AddGrpcClient that " +
+                "accepts a string and provide a unique name to resolve the conflict.",
+                ex.Message);
+        }
+
+        private class GreeterClient : Greeter.GreeterClient
+        {
+            public GreeterClient(CallInvoker callInvoker) : base(callInvoker)
             {
-                Assert.Throws<InvalidOperationException>(() => serviceProvider.GetRequiredService<GrpcClientServiceExtensionsTests>());
+                CallInvoker = (HttpClientCallInvoker)callInvoker;
             }
+
+            public new HttpClientCallInvoker CallInvoker { get; }
         }
     }
 }

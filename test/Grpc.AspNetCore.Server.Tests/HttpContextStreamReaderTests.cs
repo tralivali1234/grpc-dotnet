@@ -17,14 +17,15 @@
 #endregion
 
 using System.IO.Pipelines;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Google.Protobuf;
 using Greet;
 using Grpc.AspNetCore.Server.Internal;
 using Grpc.Tests.Shared;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Logging.Testing;
 using NUnit.Framework;
 
 namespace Grpc.AspNetCore.Server.Tests
@@ -40,12 +41,7 @@ namespace Grpc.AspNetCore.Server.Tests
 
             var httpContext = new DefaultHttpContext();
             var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext);
-            var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, (data) =>
-            {
-                var message = new HelloReply();
-                message.MergeFrom(data);
-                return message;
-            });
+            var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
 
             // Act
             var nextTask = reader.MoveNext(new CancellationToken(true));
@@ -61,15 +57,13 @@ namespace Grpc.AspNetCore.Server.Tests
             // Arrange
             var ms = new SyncPointMemoryStream();
 
+            var testSink = new TestSink();
+            var testLoggerFactory = new TestLoggerFactory(testSink, enabled: true);
+
             var httpContext = new DefaultHttpContext();
             httpContext.Features.Set<IRequestBodyPipeFeature>(new TestRequestBodyPipeFeature(PipeReader.Create(ms)));
-            var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext);
-            var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, (data) =>
-            {
-                var message = new HelloReply();
-                message.MergeFrom(data);
-                return message;
-            });
+            var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext, logger: testLoggerFactory.CreateLogger("Test"));
+            var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
 
             var cts = new CancellationTokenSource();
 
@@ -91,6 +85,9 @@ namespace Grpc.AspNetCore.Server.Tests
 
             Assert.IsTrue(nextTask.IsCompleted);
             Assert.IsTrue(nextTask.IsCanceled);
+
+            Assert.AreEqual(1, testSink.Writes.Count);
+            Assert.AreEqual("ReadingMessage", testSink.Writes.First().EventId.Name);
         }
     }
 }

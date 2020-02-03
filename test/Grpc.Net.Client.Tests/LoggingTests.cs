@@ -37,12 +37,12 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncUnaryCall_Success_LogToFactory()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 // Trigger request stream serialization
                 await request.Content.ReadAsStreamAsync().DefaultTimeout();
 
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply
                 {
                     Message = "Hello world"
                 }).DefaultTimeout();
@@ -56,14 +56,14 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient, loggerFactory);
 
             // Act
-            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
 
             // Assert
             Assert.AreEqual("Hello world", rs.Message);
 
             var logs = testSink.Writes.Where(w => w.LogLevel >= Microsoft.Extensions.Logging.LogLevel.Debug).ToList();
 
-            Assert.AreEqual("Starting gRPC call. Method type: 'Unary', URI: '/ServiceName/MethodName'.", logs[0].State.ToString());
+            Assert.AreEqual("Starting gRPC call. Method type: 'Unary', URI: 'https://localhost/ServiceName/MethodName'.", logs[0].State.ToString());
             AssertScope(logs[0]);
 
             Assert.AreEqual("Sending message.", logs[1].State.ToString());

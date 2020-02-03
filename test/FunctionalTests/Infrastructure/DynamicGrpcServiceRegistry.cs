@@ -21,15 +21,11 @@ using System.Collections.Generic;
 using System.Linq;
 using FunctionalTestsWebsite.Infrastructure;
 using Google.Protobuf;
-using Grpc.AspNetCore.Server.Internal;
 using Grpc.AspNetCore.Server.Model;
 using Grpc.Core;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Builder.Internal;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
-using Moq;
-using NUnit.Framework;
 
 namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
 {
@@ -47,7 +43,7 @@ namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
             _serviceProvider = serviceProvider;
         }
 
-        public string AddUnaryMethod<TRequest, TResponse>(UnaryServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
+        public Method<TRequest, TResponse> AddUnaryMethod<TRequest, TResponse>(UnaryServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
             where TRequest : class, IMessage, new()
             where TResponse : class, IMessage, new()
         {
@@ -58,10 +54,10 @@ namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
                 c.AddUnaryMethod(method, new List<object>(), new UnaryServerMethod<DynamicService, TRequest, TResponse>((service, request, context) => callHandler(request, context)));
             });
 
-            return method.FullName;
+            return method;
         }
 
-        public string AddServerStreamingMethod<TRequest, TResponse>(ServerStreamingServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
+        public Method<TRequest, TResponse> AddServerStreamingMethod<TRequest, TResponse>(ServerStreamingServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
             where TRequest : class, IMessage, new()
             where TResponse : class, IMessage, new()
         {
@@ -72,10 +68,10 @@ namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
                 c.AddServerStreamingMethod(method, new List<object>(), new ServerStreamingServerMethod<DynamicService, TRequest, TResponse>((service, request, stream, context) => callHandler(request, stream, context)));
             });
 
-            return method.FullName;
+            return method;
         }
 
-        public string AddClientStreamingMethod<TRequest, TResponse>(ClientStreamingServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
+        public Method<TRequest, TResponse> AddClientStreamingMethod<TRequest, TResponse>(ClientStreamingServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
             where TRequest : class, IMessage, new()
             where TResponse : class, IMessage, new()
         {
@@ -86,10 +82,10 @@ namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
                 c.AddClientStreamingMethod(method, new List<object>(), new ClientStreamingServerMethod<DynamicService, TRequest, TResponse>((service, stream, context) => callHandler(stream, context)));
             });
 
-            return method.FullName;
+            return method;
         }
 
-        public string AddDuplexStreamingMethod<TRequest, TResponse>(DuplexStreamingServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
+        public Method<TRequest, TResponse> AddDuplexStreamingMethod<TRequest, TResponse>(DuplexStreamingServerMethod<TRequest, TResponse> callHandler, string? methodName = null)
             where TRequest : class, IMessage, new()
             where TResponse : class, IMessage, new()
         {
@@ -100,7 +96,7 @@ namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
                 c.AddDuplexStreamingMethod(method, new List<object>(), new DuplexStreamingServerMethod<DynamicService, TRequest, TResponse>((service, input, output, context) => callHandler(input, output, context)));
             });
 
-            return method.FullName;
+            return method;
         }
 
         private void AddServiceCore(Action<ServiceMethodProviderContext<DynamicService>> action)

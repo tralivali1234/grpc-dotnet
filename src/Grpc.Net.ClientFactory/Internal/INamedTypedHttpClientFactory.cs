@@ -17,10 +17,11 @@
 #endregion
 
 using System.Net.Http;
+using Grpc.Core;
 
 namespace Grpc.Net.ClientFactory.Internal
 {
-    interface INamedTypedHttpClientFactory<TClient>
+    interface INamedTypedHttpClientFactory<TClient> where TClient : ClientBase
     {
         TClient CreateClient(HttpClient httpClient, string name);
     }

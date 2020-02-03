@@ -22,40 +22,59 @@ using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace InteropTestsWebsite
 {
     public class Program
     {
+        private const LogLevel MinimumLogLevel = LogLevel.Debug;
+
         public static void Main(string[] args)
         {
-            CreateWebHostBuilder(args).Build().Run();
+            CreateHostBuilder(args).Build().Run();
         }
 
-        public static IWebHostBuilder CreateWebHostBuilder(string[] args) =>
-            WebHost.CreateDefaultBuilder(args)
-                .ConfigureKestrel((context, options) =>
+        public static IHostBuilder CreateHostBuilder(string[] args) =>
+            Host.CreateDefaultBuilder(args)
+                .ConfigureServices(services =>
                 {
-                    // Support --port and --use_tls cmdline arguments normally supported
-                    // by gRPC interop servers.
-                    int port = context.Configuration.GetValue<int>("port", 50052);
-                    bool useTls = context.Configuration.GetValue<bool>("use_tls", false);
-
-                    options.Limits.MinRequestBodyDataRate = null;
-                    options.ListenAnyIP(port, listenOptions =>
-                    {
-                        Console.WriteLine($"Enabling connection encryption: {useTls}");
-
-                        if (useTls)
-                        {
-                            var basePath = Path.GetDirectoryName(typeof(Program).Assembly.Location);
-                            var certPath = Path.Combine(basePath!, "Certs", "server1.pfx");
-
-                            listenOptions.UseHttps(certPath, "1111");
-                        }
-                        listenOptions.Protocols = HttpProtocols.Http2;
-                    });
+                    services.AddLogging(builder => builder.SetMinimumLevel(MinimumLogLevel));
                 })
-                .UseStartup<Startup>();
+                .ConfigureWebHostDefaults(webBuilder =>
+                {
+                    webBuilder.ConfigureKestrel((context, options) =>
+                    {
+                        // Support --port and --use_tls cmdline arguments normally supported
+                        // by gRPC interop servers.
+                        var http2Port = context.Configuration.GetValue<int>("port", 50052);
+                        var http1Port = context.Configuration.GetValue<int>("port_http1", -1);
+                        var useTls = context.Configuration.GetValue<bool>("use_tls", false);
+
+                        options.Limits.MinRequestBodyDataRate = null;
+                        options.ListenAnyIP(http2Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http2));
+                        if (http1Port != -1)
+                        {
+                            options.ListenAnyIP(http1Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http1));
+                        }
+
+                        void ConfigureEndpoint(ListenOptions listenOptions, bool useTls, HttpProtocols httpProtocols)
+                        {
+                            Console.WriteLine($"Enabling connection encryption: {useTls}");
+
+                            if (useTls)
+                            {
+                                var basePath = Path.GetDirectoryName(typeof(Program).Assembly.Location);
+                                var certPath = Path.Combine(basePath!, "Certs", "server1.pfx");
+
+                                listenOptions.UseHttps(certPath, "1111");
+                            }
+                            listenOptions.Protocols = httpProtocols;
+                        }
+                    });
+                    webBuilder.UseStartup<Startup>();
+                });
     }
 }

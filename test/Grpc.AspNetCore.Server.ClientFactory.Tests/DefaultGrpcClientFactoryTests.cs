@@ -19,10 +19,13 @@
 using System;
 using System.Net.Http;
 using System.Threading;
+using System.Threading.Tasks;
+using Greet;
 using Grpc.AspNetCore.Server.ClientFactory.Tests.TestObjects;
-using Grpc.AspNetCore.Server.Features;
+using Grpc.Core;
 using Grpc.Net.ClientFactory;
 using Grpc.Net.ClientFactory.Internal;
+using Grpc.Tests.Shared;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -34,40 +37,65 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
     public class DefaultGrpcClientFactoryTests
     {
         [Test]
-        public void CreateClient_ServerCallContextHasValues_PropogatedDeadlineAndCancellation()
+        public void EnableCallContextPropagation_NotFromGrpcClientFactory_ThrowError()
+        {
+            var services = new ServiceCollection();
+            var clientBuilder = services.AddHttpClient("TestClient");
+
+            var ex = Assert.Throws<InvalidOperationException>(() => clientBuilder.EnableCallContextPropagation());
+            Assert.AreEqual("EnableCallContextPropagation must be used with a gRPC client.", ex.Message);
+        }
+
+        [Test]
+        public void EnableCallContextPropagation_NotFromGrpcClientFactoryAndExistingGrpcClient_ThrowError()
+        {
+            var services = new ServiceCollection();
+            services.AddGrpcClient<Greeter.GreeterClient>();
+            var clientBuilder = services.AddHttpClient("TestClient");
+
+            var ex = Assert.Throws<InvalidOperationException>(() => clientBuilder.EnableCallContextPropagation());
+            Assert.AreEqual("EnableCallContextPropagation must be used with a gRPC client.", ex.Message);
+        }
+
+        [Test]
+        public async Task CreateClient_ServerCallContextHasValues_PropogatedDeadlineAndCancellation()
         {
             // Arrange
             var baseAddress = new Uri("http://localhost");
-            var deadline = new DateTime(2000, 12, 12, 1, 1, 1, DateTimeKind.Utc);
+            var deadline = DateTime.UtcNow.AddDays(1);
             var cancellationToken = new CancellationTokenSource().Token;
+
+            CallOptions options = default;
 
             var services = new ServiceCollection();
             services.AddOptions();
             services.AddSingleton(CreateHttpContextAccessorWithServerCallContext(deadline, cancellationToken));
-            services.AddGrpcClient<TestGreeterClient>(o =>
-            {
-                o.BaseAddress = baseAddress;
-            }).EnableCallContextPropagation();
+            services
+                .AddGrpcClient<Greeter.GreeterClient>(o =>
+                {
+                    o.Address = baseAddress;
+                })
+                .EnableCallContextPropagation()
+                .AddInterceptor(() => new CallbackInterceptor(o => options = o))
+                .AddHttpMessageHandler(() => ClientTestHelpers.CreateTestMessageHandler(new HelloReply()));
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             var clientFactory = new DefaultGrpcClientFactory(
                 serviceProvider,
-                serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                serviceProvider.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>());
+                serviceProvider.GetRequiredService<IHttpClientFactory>());
+            var client = clientFactory.CreateClient<Greeter.GreeterClient>(nameof(Greeter.GreeterClient));
 
             // Act
-            var client = clientFactory.CreateClient<TestGreeterClient>(nameof(TestGreeterClient));
+            await client.SayHelloAsync(new HelloRequest()).ResponseAsync.DefaultTimeout();
 
             // Assert
-            Assert.IsNotNull(client);
-            Assert.AreEqual(baseAddress, client.CallInvoker.BaseAddress);
-            Assert.AreEqual(deadline, client.CallInvoker.Deadline);
-            Assert.AreEqual(cancellationToken, client.CallInvoker.CancellationToken);
+            Assert.AreEqual(deadline, options.Deadline);
+            Assert.AreEqual(cancellationToken, options.CancellationToken);
         }
 
         [Test]
-        public void CreateClient_NoHttpContext_ThrowError()
+        public async Task CreateClient_NoHttpContext_ThrowError()
         {
             // Arrange
             var baseAddress = new Uri("http://localhost");
@@ -75,27 +103,30 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
             var services = new ServiceCollection();
             services.AddOptions();
             services.AddSingleton(CreateHttpContextAccessor(null));
-            services.AddGrpcClient<TestGreeterClient>(o =>
-            {
-                o.BaseAddress = baseAddress;
-            }).EnableCallContextPropagation();
+            services
+                .AddGrpcClient<Greeter.GreeterClient>(o =>
+                {
+                    o.Address = baseAddress;
+                })
+                .EnableCallContextPropagation()
+                .AddHttpMessageHandler(() => ClientTestHelpers.CreateTestMessageHandler(new HelloReply()));
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             var clientFactory = new DefaultGrpcClientFactory(
                 serviceProvider,
-                serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                serviceProvider.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>());
+                serviceProvider.GetRequiredService<IHttpClientFactory>());
+            var client = clientFactory.CreateClient<Greeter.GreeterClient>(nameof(Greeter.GreeterClient));
 
             // Act
-            var ex = Assert.Throws<InvalidOperationException>(() => clientFactory.CreateClient<TestGreeterClient>(nameof(TestGreeterClient)));
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => client.SayHelloAsync(new HelloRequest(), new CallOptions()).ResponseAsync).DefaultTimeout();
 
             // Assert
-            Assert.AreEqual("Unable to propagate server context values to the client. Can't find the current HttpContext.", ex.Message);
+            Assert.AreEqual("Unable to propagate server context values to the call. Can't find the current HttpContext.", ex.Message);
         }
 
         [Test]
-        public void CreateClient_NoServerCallContextOnHttpContext_ThrowError()
+        public async Task CreateClient_NoServerCallContextOnHttpContext_ThrowError()
         {
             // Arrange
             var baseAddress = new Uri("http://localhost");
@@ -103,23 +134,26 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
             var services = new ServiceCollection();
             services.AddOptions();
             services.AddSingleton(CreateHttpContextAccessor(new DefaultHttpContext()));
-            services.AddGrpcClient<TestGreeterClient>(o =>
-            {
-                o.BaseAddress = baseAddress;
-            }).EnableCallContextPropagation();
+            services
+                .AddGrpcClient<Greeter.GreeterClient>(o =>
+                {
+                    o.Address = baseAddress;
+                })
+                .EnableCallContextPropagation()
+                .AddHttpMessageHandler(() => ClientTestHelpers.CreateTestMessageHandler(new HelloReply()));
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             var clientFactory = new DefaultGrpcClientFactory(
                 serviceProvider,
-                serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                serviceProvider.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>());
+                serviceProvider.GetRequiredService<IHttpClientFactory>());
+            var client = clientFactory.CreateClient<Greeter.GreeterClient>(nameof(Greeter.GreeterClient));
 
             // Act
-            var ex = Assert.Throws<InvalidOperationException>(() => clientFactory.CreateClient<TestGreeterClient>(nameof(TestGreeterClient)));
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => client.SayHelloAsync(new HelloRequest(), new CallOptions()).ResponseAsync).DefaultTimeout();
 
             // Assert
-            Assert.AreEqual("Unable to propagate server context values to the client. Can't find the current gRPC ServerCallContext.", ex.Message);
+            Assert.AreEqual("Unable to propagate server context values to the call. Can't find the current gRPC ServerCallContext.", ex.Message);
         }
 
         private IHttpContextAccessor CreateHttpContextAccessor(HttpContext? httpContext)

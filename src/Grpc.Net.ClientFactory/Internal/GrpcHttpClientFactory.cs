@@ -30,19 +30,18 @@ using Microsoft.Extensions.Options;
 
 namespace Grpc.Net.ClientFactory.Internal
 {
-    // Note that the constraint is set to class to allow clients inheriting from ClientBase and LiteClientBase
-    internal class GrpcHttpClientFactory<TClient> : INamedTypedHttpClientFactory<TClient> where TClient : class
+    internal class GrpcHttpClientFactory<TClient> : INamedTypedHttpClientFactory<TClient> where TClient : ClientBase
     {
         private readonly Cache _cache;
         private readonly IServiceProvider _services;
         private readonly ILoggerFactory _loggerFactory;
-        private readonly IOptionsMonitor<GrpcClientFactoryOptions> _optionsMonitor;
+        private readonly IOptionsMonitor<GrpcClientFactoryOptions> _clientFactoryOptionsMonitor;
 
         public GrpcHttpClientFactory(
             Cache cache,
             IServiceProvider services,
             ILoggerFactory loggerFactory,
-            IOptionsMonitor<GrpcClientFactoryOptions> optionsMonitor)
+            IOptionsMonitor<GrpcClientFactoryOptions> clientFactoryOptionsMonitor)
         {
             if (cache == null)
             {
@@ -59,15 +58,15 @@ namespace Grpc.Net.ClientFactory.Internal
                 throw new ArgumentNullException(nameof(loggerFactory));
             }
 
-            if (optionsMonitor == null)
+            if (clientFactoryOptionsMonitor == null)
             {
-                throw new ArgumentNullException(nameof(optionsMonitor));
+                throw new ArgumentNullException(nameof(clientFactoryOptionsMonitor));
             }
 
             _cache = cache;
             _services = services;
             _loggerFactory = loggerFactory;
-            _optionsMonitor = optionsMonitor;
+            _clientFactoryOptionsMonitor = clientFactoryOptionsMonitor;
         }
 
         public TClient CreateClient(HttpClient httpClient, string name)
@@ -77,15 +76,35 @@ namespace Grpc.Net.ClientFactory.Internal
                 throw new ArgumentNullException(nameof(httpClient));
             }
 
-            var httpClientCallInvoker = new HttpClientCallInvoker(httpClient, _loggerFactory);
+            var channelOptions = new GrpcChannelOptions();
+            channelOptions.HttpClient = httpClient;
+            channelOptions.LoggerFactory = _loggerFactory;
 
-            var options = _optionsMonitor.Get(name);
-            for (var i = 0; i < options.CallInvokerActions.Count; i++)
+            var clientFactoryOptions = _clientFactoryOptionsMonitor.Get(name);
+
+            if (clientFactoryOptions.ChannelOptionsActions.Count > 0)
             {
-                options.CallInvokerActions[i](httpClientCallInvoker);
+                foreach (var applyOptions in clientFactoryOptions.ChannelOptionsActions)
+                {
+                    applyOptions(channelOptions);
+                }
             }
 
-            return (TClient)_cache.Activator(_services, new object[] { httpClientCallInvoker.Intercept(options.Interceptors.ToArray()) });
+            var address = clientFactoryOptions.Address ?? httpClient.BaseAddress;
+            if (address == null)
+            {
+                throw new InvalidOperationException($"Could not resolve the address for gRPC client '{name}'.");
+            }
+
+            var channel = GrpcChannel.ForAddress(address, channelOptions);
+
+            var httpClientCallInvoker = channel.CreateCallInvoker();
+
+            var resolvedCallInvoker = clientFactoryOptions.Interceptors.Count == 0
+                ? httpClientCallInvoker
+                : httpClientCallInvoker.Intercept(clientFactoryOptions.Interceptors.ToArray());
+
+            return (TClient)_cache.Activator(_services, new object[] { resolvedCallInvoker });
         }
 
         // The Cache should be registered as a singleton, so it that it can

@@ -20,6 +20,7 @@ using System;
 using System.Threading.Tasks;
 using Grpc.AspNetCore.Server.Model;
 using Grpc.Core;
+using Grpc.Shared.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -31,71 +32,21 @@ namespace Grpc.AspNetCore.Server.Internal.CallHandlers
         where TResponse : class
         where TService : class
     {
-        private readonly UnaryServerMethod<TService, TRequest, TResponse> _invoker;
-        private readonly UnaryServerMethod<TRequest, TResponse>? _pipelineInvoker;
+        private readonly UnaryServerMethodInvoker<TService, TRequest, TResponse> _invoker;
 
         public UnaryServerCallHandler(
-            Method<TRequest, TResponse> method,
-            UnaryServerMethod<TService, TRequest, TResponse> invoker,
-            GrpcServiceOptions serviceOptions,
+            UnaryServerMethodInvoker<TService, TRequest, TResponse> invoker,
             ILoggerFactory loggerFactory)
-            : base(method, serviceOptions, loggerFactory)
+            : base(invoker, loggerFactory)
         {
             _invoker = invoker;
-
-            if (!ServiceOptions.Interceptors.IsEmpty)
-            {
-                UnaryServerMethod<TRequest, TResponse> resolvedInvoker = async (resolvedRequest, resolvedContext) =>
-                {
-                    var activator = resolvedContext.GetHttpContext().RequestServices.GetRequiredService<IGrpcServiceActivator<TService>>();
-                    TService? service = null;
-                    try
-                    {
-                        service = activator.Create();
-                        return await _invoker(service, resolvedRequest, resolvedContext);
-                    }
-                    finally
-                    {
-                        if (service != null)
-                        {
-                            activator.Release(service);
-                        }
-                    }
-                };
-
-                var interceptorPipeline = new InterceptorPipelineBuilder<TRequest, TResponse>(ServiceOptions.Interceptors);
-                _pipelineInvoker = interceptorPipeline.UnaryPipeline(resolvedInvoker);
-            }
         }
 
         protected override async Task HandleCallAsyncCore(HttpContext httpContext, HttpContextServerCallContext serverCallContext)
         {
-            var requestPayload = await httpContext.Request.BodyReader.ReadSingleMessageAsync(serverCallContext);
-            var request = Method.RequestMarshaller.Deserializer(requestPayload);
+            var request = await httpContext.Request.BodyReader.ReadSingleMessageAsync<TRequest>(serverCallContext, MethodInvoker.Method.RequestMarshaller.ContextualDeserializer);
 
-            TResponse? response = null;
-
-            if (_pipelineInvoker == null)
-            {
-                var activator = httpContext.RequestServices.GetRequiredService<IGrpcServiceActivator<TService>>();
-                TService? service = null;
-                try
-                {
-                    service = activator.Create();
-                    response = await _invoker(service, request, serverCallContext);
-                }
-                finally
-                {
-                    if (service != null)
-                    {
-                        activator.Release(service);
-                    }
-                }
-            }
-            else
-            {
-                response = await _pipelineInvoker(request, serverCallContext);
-            }
+            var response = await _invoker.Invoke(httpContext, serverCallContext, request);
 
             if (response == null)
             {
@@ -104,7 +55,7 @@ namespace Grpc.AspNetCore.Server.Internal.CallHandlers
             }
 
             var responseBodyWriter = httpContext.Response.BodyWriter;
-            await responseBodyWriter.WriteMessageAsync(response, serverCallContext, Method.ResponseMarshaller.Serializer, canFlush: false);
+            await responseBodyWriter.WriteMessageAsync(response, serverCallContext, MethodInvoker.Method.ResponseMarshaller.ContextualSerializer, canFlush: false);
         }
     }
 }

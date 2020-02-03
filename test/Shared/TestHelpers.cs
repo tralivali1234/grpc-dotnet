@@ -16,12 +16,9 @@
 
 #endregion
 
+using System;
 using System.IO;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Threading;
 using System.Threading.Tasks;
-using Google.Protobuf;
 
 namespace Grpc.Tests.Shared
 {
@@ -34,23 +31,35 @@ namespace Grpc.Tests.Shared
             return resolvedPath;
         }
 
-        public static async Task<StreamContent> CreateResponseContent<TResponse>(params TResponse[] responses) where TResponse : IMessage<TResponse>
+        public static async Task AssertIsTrueRetryAsync(Func<bool> assert, string message)
         {
-            var ms = new MemoryStream();
-            foreach (var response in responses)
+            const int Retrys = 10;
+
+            for (int i = 0; i < Retrys; i++)
             {
-                await WriteResponseAsync(ms, response);
+                if (i > 0)
+                {
+                    await Task.Delay((i + 1) * 10);
+                }
+
+                if (assert())
+                {
+                    return;
+                }
             }
-            ms.Seek(0, SeekOrigin.Begin);
-            var streamContent = new StreamContent(ms);
-            streamContent.Headers.ContentType = new MediaTypeHeaderValue("application/grpc");
-            return streamContent;
+
+            throw new Exception($"Assert failed after {Retrys} retries: {message}");
         }
 
-        public static async Task WriteResponseAsync<TResponse>(Stream ms, TResponse response) where TResponse : IMessage<TResponse>
+        public static Task RunParallel(int count, Func<Task> action)
         {
-            await ResponseUtils.WriteHeaderAsync(ms, response.CalculateSize(), false, CancellationToken.None);
-            await ms.WriteAsync(response.ToByteArray());
+            var actionTasks = new Task[count];
+            for (int i = 0; i < actionTasks.Length; i++)
+            {
+                actionTasks[i] = action();
+            }
+
+            return Task.WhenAll(actionTasks);
         }
     }
 }

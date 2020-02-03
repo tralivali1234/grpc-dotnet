@@ -19,15 +19,14 @@
 using System;
 using System.Linq;
 using Greet;
-using Grpc.AspNetCore.Server.Model.Internal;
 using Grpc.AspNetCore.Server.Tests.TestObjects;
 using Grpc.AspNetCore.Server.Tests.TestObjects.Services.WithAttribute;
 using Grpc.Core;
+using Grpc.Tests.Shared;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging.Testing;
 using Moq;
 using NUnit.Framework;
@@ -43,7 +42,7 @@ namespace Grpc.AspNetCore.Server.Tests
             // Arrange
             var services = new ServiceCollection();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act & Assert
             var ex = Assert.Throws<InvalidOperationException>(() => routeBuilder.MapGrpcService<Greeter.GreeterBase>());
@@ -55,11 +54,9 @@ namespace Grpc.AspNetCore.Server.Tests
         public void MapGrpcService_CantBind_RaiseError()
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddGrpc();
+            var services = ServicesHelpers.CreateServices();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act & Assert
             var ex = Assert.Throws<InvalidOperationException>(() => routeBuilder.MapGrpcService<ErrorService>());
@@ -97,11 +94,9 @@ namespace Grpc.AspNetCore.Server.Tests
         private void BindServiceCore<TService>() where TService : class
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddGrpc();
+            var services = ServicesHelpers.CreateServices();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             routeBuilder.MapGrpcService<TService>();
@@ -114,14 +109,14 @@ namespace Grpc.AspNetCore.Server.Tests
             Assert.AreEqual(2, endpoints.Count);
 
             var routeEndpoint1 = (RouteEndpoint)endpoints[0];
-            Assert.AreEqual("/Greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
             Assert.AreEqual("POST", routeEndpoint1.Metadata.GetMetadata<IHttpMethodMetadata>().HttpMethods.Single());
-            Assert.AreEqual("/Greet.Greeter/SayHello", routeEndpoint1.Metadata.GetMetadata<GrpcMethodMetadata>().Method.FullName);
+            Assert.AreEqual("/greet.Greeter/SayHello", routeEndpoint1.Metadata.GetMetadata<GrpcMethodMetadata>().Method.FullName);
 
             var routeEndpoint2 = (RouteEndpoint)endpoints[1];
-            Assert.AreEqual("/Greet.Greeter/SayHellos", routeEndpoint2.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHellos", routeEndpoint2.RoutePattern.RawText);
             Assert.AreEqual("POST", routeEndpoint2.Metadata.GetMetadata<IHttpMethodMetadata>().HttpMethods.Single());
-            Assert.AreEqual("/Greet.Greeter/SayHellos", routeEndpoint2.Metadata.GetMetadata<GrpcMethodMetadata>().Method.FullName);
+            Assert.AreEqual("/greet.Greeter/SayHellos", routeEndpoint2.Metadata.GetMetadata<GrpcMethodMetadata>().Method.FullName);
         }
 
         [Test]
@@ -136,11 +131,10 @@ namespace Grpc.AspNetCore.Server.Tests
                 .Setup(m => m.CreateLogger(It.IsAny<string>()))
                 .Returns((string categoryName) => testLogger);
 
-            var services = new ServiceCollection();
+            var services = ServicesHelpers.CreateServices();
             services.AddSingleton<ILoggerFactory>(mockLoggerFactory.Object);
-            services.AddGrpc();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             routeBuilder.MapGrpcService<GreeterWithAttributeService>();
@@ -152,10 +146,10 @@ namespace Grpc.AspNetCore.Server.Tests
             Assert.AreEqual("Discovering gRPC methods for Grpc.AspNetCore.Server.Tests.TestObjects.Services.WithAttribute.GreeterWithAttributeService.", s1);
 
             var s2 = writes[1].State.ToString();
-            Assert.AreEqual("Added gRPC method 'SayHello' to service 'Greet.Greeter'. Method type: 'Unary', route pattern: '/Greet.Greeter/SayHello'.", s2);
+            Assert.AreEqual("Added gRPC method 'SayHello' to service 'greet.Greeter'. Method type: 'Unary', route pattern: '/greet.Greeter/SayHello'.", s2);
 
             var s3 = writes[2].State.ToString();
-            Assert.AreEqual("Added gRPC method 'SayHellos' to service 'Greet.Greeter'. Method type: 'ServerStreaming', route pattern: '/Greet.Greeter/SayHellos'.", s3);
+            Assert.AreEqual("Added gRPC method 'SayHellos' to service 'greet.Greeter'. Method type: 'ServerStreaming', route pattern: '/greet.Greeter/SayHellos'.", s3);
         }
 
         [Test]
@@ -170,11 +164,10 @@ namespace Grpc.AspNetCore.Server.Tests
                 .Setup(m => m.CreateLogger(It.IsAny<string>()))
                 .Returns((string categoryName) => testLogger);
 
-            var services = new ServiceCollection();
+            var services = ServicesHelpers.CreateServices();
             services.AddSingleton<ILoggerFactory>(mockLoggerFactory.Object);
-            services.AddGrpc();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             routeBuilder.MapGrpcService<object>();
@@ -196,11 +189,9 @@ namespace Grpc.AspNetCore.Server.Tests
         public void MapGrpcService_ConventionBuilder_AddsMetadata()
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddGrpc();
+            var services = ServicesHelpers.CreateServices();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             routeBuilder.MapGrpcService<GreeterWithAttributeService>().Add(builder =>
@@ -216,11 +207,11 @@ namespace Grpc.AspNetCore.Server.Tests
             Assert.AreEqual(2, endpoints.Count);
 
             var routeEndpoint1 = (RouteEndpoint)endpoints[0];
-            Assert.AreEqual("/Greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
             Assert.NotNull(routeEndpoint1.Metadata.GetMetadata<CustomMetadata>());
 
             var routeEndpoint2 = (RouteEndpoint)endpoints[1];
-            Assert.AreEqual("/Greet.Greeter/SayHellos", routeEndpoint2.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHellos", routeEndpoint2.RoutePattern.RawText);
             Assert.NotNull(routeEndpoint2.Metadata.GetMetadata<CustomMetadata>());
         }
 
@@ -228,11 +219,9 @@ namespace Grpc.AspNetCore.Server.Tests
         public void MapGrpcService_ServiceWithAttribute_AddsAttributesAsMetadata()
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddGrpc();
+            var services = ServicesHelpers.CreateServices();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             routeBuilder.MapGrpcService<GreeterServiceWithMetadataAttributes>();
@@ -245,11 +234,11 @@ namespace Grpc.AspNetCore.Server.Tests
             Assert.AreEqual(2, endpoints.Count);
 
             var routeEndpoint1 = (RouteEndpoint)endpoints[0];
-            Assert.AreEqual("/Greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
             Assert.AreEqual("Method", routeEndpoint1.Metadata.GetMetadata<CustomAttribute>().Value);
 
             var routeEndpoint2 = (RouteEndpoint)endpoints[1];
-            Assert.AreEqual("/Greet.Greeter/SayHellos", routeEndpoint2.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHellos", routeEndpoint2.RoutePattern.RawText);
             Assert.AreEqual("Class", routeEndpoint2.Metadata.GetMetadata<CustomAttribute>().Value);
         }
 
@@ -257,11 +246,9 @@ namespace Grpc.AspNetCore.Server.Tests
         public void MapGrpcService_ServiceWithAttributeAndBuilder_TestMetdataPrecedence()
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddGrpc();
+            var services = ServicesHelpers.CreateServices();
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             routeBuilder.MapGrpcService<GreeterServiceWithMetadataAttributes>().Add(builder =>
@@ -277,7 +264,7 @@ namespace Grpc.AspNetCore.Server.Tests
             Assert.AreEqual(2, endpoints.Count);
 
             var routeEndpoint1 = (RouteEndpoint)endpoints[0];
-            Assert.AreEqual("/Greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
+            Assert.AreEqual("/greet.Greeter/SayHello", routeEndpoint1.RoutePattern.RawText);
 
             var orderedMetadata = routeEndpoint1.Metadata.GetOrderedMetadata<CustomAttribute>().ToList();
             Assert.AreEqual("Class", orderedMetadata[0].Value);
@@ -291,14 +278,12 @@ namespace Grpc.AspNetCore.Server.Tests
         public void MapGrpcService_NoMatchingCompressionProvider_ThrowError()
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddGrpc(options =>
+            var services = ServicesHelpers.CreateServices(options =>
             {
                 options.ResponseCompressionAlgorithm = "DOES_NOT_EXIST";
             });
 
-            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider());
+            var routeBuilder = CreateTestEndpointRouteBuilder(services.BuildServiceProvider(validateScopes: true));
 
             // Act
             var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -307,7 +292,8 @@ namespace Grpc.AspNetCore.Server.Tests
             });
 
             // Assert
-            Assert.AreEqual("The configured response compression algorithm 'DOES_NOT_EXIST' does not have a matching compression provider.", ex.Message);
+            Assert.AreEqual("Error binding gRPC service 'GreeterWithAttributeService'.", ex.Message);
+            Assert.AreEqual("The configured response compression algorithm 'DOES_NOT_EXIST' does not have a matching compression provider.", ex.InnerException!.InnerException!.Message);
         }
 
         public IEndpointRouteBuilder CreateTestEndpointRouteBuilder(IServiceProvider serviceProvider)

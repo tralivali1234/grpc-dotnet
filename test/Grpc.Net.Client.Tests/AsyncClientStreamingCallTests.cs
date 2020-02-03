@@ -41,7 +41,7 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             HttpRequestMessage? httpRequestMessage = null;
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 httpRequestMessage = request;
 
@@ -50,13 +50,13 @@ namespace Grpc.Net.Client.Tests
                     Message = "Hello world"
                 };
 
-                var streamContent = await TestHelpers.CreateResponseContent(reply).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             await call.RequestStream.CompleteAsync().DefaultTimeout();
 
@@ -76,11 +76,11 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncClientStreamingCall_Success_RequestContentSent()
         {
             // Arrange
-            PushStreamContent? content = null;
+            PushStreamContent<HelloRequest, HelloReply>? content = null;
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                content = (PushStreamContent)request.Content;
+                content = (PushStreamContent<HelloRequest, HelloReply>)request.Content;
                 await content.PushComplete.DefaultTimeout();
 
                 HelloReply reply = new HelloReply
@@ -88,14 +88,14 @@ namespace Grpc.Net.Client.Tests
                     Message = "Hello world"
                 };
 
-                var streamContent = await TestHelpers.CreateResponseContent(reply).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
 
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             // Assert
             Assert.IsNotNull(call);
@@ -112,9 +112,23 @@ namespace Grpc.Net.Client.Tests
             await call.RequestStream.CompleteAsync().DefaultTimeout();
 
             var requestContent = await streamTask.DefaultTimeout();
-            var requestMessage = await requestContent.ReadStreamedMessageAsync(NullLogger.Instance, TestHelpers.ServiceMethod.RequestMarshaller.Deserializer, CancellationToken.None).DefaultTimeout();
+            var requestMessage = await requestContent.ReadMessageAsync(
+                NullLogger.Instance,
+                ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
+                GrpcProtocolConstants.IdentityGrpcEncoding,
+                maximumMessageSize: null,
+                GrpcProtocolConstants.DefaultCompressionProviders,
+                singleMessage: false,
+                CancellationToken.None).AsTask().DefaultTimeout();
             Assert.AreEqual("1", requestMessage.Name);
-            requestMessage = await requestContent.ReadStreamedMessageAsync(NullLogger.Instance, TestHelpers.ServiceMethod.RequestMarshaller.Deserializer, CancellationToken.None).DefaultTimeout();
+            requestMessage = await requestContent.ReadMessageAsync(
+                NullLogger.Instance,
+                ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
+                GrpcProtocolConstants.IdentityGrpcEncoding,
+                maximumMessageSize: null,
+                GrpcProtocolConstants.DefaultCompressionProviders,
+                singleMessage: false,
+                CancellationToken.None).AsTask().DefaultTimeout();
             Assert.AreEqual("2", requestMessage.Name);
 
             var responseMessage = await responseTask.DefaultTimeout();
@@ -122,10 +136,10 @@ namespace Grpc.Net.Client.Tests
         }
 
         [Test]
-        public void ClientStreamWriter_WriteWhilePendingWrite_ErrorThrown()
+        public async Task ClientStreamWriter_WriteWhilePendingWrite_ErrorThrown()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var streamContent = new StreamContent(new SyncPointMemoryStream());
                 return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent));
@@ -133,23 +147,23 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             // Assert
             var writeTask1 = call.RequestStream.WriteAsync(new HelloRequest { Name = "1" });
             Assert.IsFalse(writeTask1.IsCompleted);
 
             var writeTask2 = call.RequestStream.WriteAsync(new HelloRequest { Name = "2" });
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(() => writeTask2.DefaultTimeout());
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => writeTask2).DefaultTimeout();
 
-            Assert.AreEqual("Cannot write message because the previous write is in progress.", ex.Message);
+            Assert.AreEqual("Can't write the message because the previous write is in progress.", ex.Message);
         }
 
         [Test]
-        public void ClientStreamWriter_CompleteWhilePendingWrite_ErrorThrown()
+        public async Task ClientStreamWriter_CompleteWhilePendingWrite_ErrorThrown()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var streamContent = new StreamContent(new SyncPointMemoryStream());
                 return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent));
@@ -157,23 +171,23 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             // Assert
             var writeTask1 = call.RequestStream.WriteAsync(new HelloRequest { Name = "1" });
             Assert.IsFalse(writeTask1.IsCompleted);
 
             var completeTask = call.RequestStream.CompleteAsync();
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(() => completeTask.DefaultTimeout());
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => completeTask).DefaultTimeout();
 
-            Assert.AreEqual("Cannot complete client stream writer because the previous write is in progress.", ex.Message);
+            Assert.AreEqual("Can't complete the client stream writer because the previous write is in progress.", ex.Message);
         }
 
         [Test]
         public async Task ClientStreamWriter_WriteWhileComplete_ErrorThrown()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var streamContent = new StreamContent(new SyncPointMemoryStream());
                 return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent));
@@ -181,20 +195,20 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
             await call.RequestStream.CompleteAsync();
 
             // Assert
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(() => call.RequestStream.WriteAsync(new HelloRequest { Name = "1" }).DefaultTimeout());
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => call.RequestStream.WriteAsync(new HelloRequest { Name = "1" })).DefaultTimeout();
 
-            Assert.AreEqual("Cannot write message because the client stream writer is complete.", ex.Message);
+            Assert.AreEqual("Can't write the message because the client stream writer is complete.", ex.Message);
         }
 
         [Test]
-        public void ClientStreamWriter_WriteWithInvalidHttpStatus_ErrorThrown()
+        public async Task ClientStreamWriter_WriteWithInvalidHttpStatus_ErrorThrown()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var streamContent = new StreamContent(new SyncPointMemoryStream());
                 return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.NotFound, streamContent));
@@ -202,30 +216,91 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
 
             // Assert
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(() => call.RequestStream.WriteAsync(new HelloRequest { Name = "1" }).DefaultTimeout());
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => call.RequestStream.WriteAsync(new HelloRequest { Name = "1" })).DefaultTimeout();
 
-            Assert.AreEqual("Bad gRPC response. Expected HTTP status code 200. Got status code: 404", ex.Message);
+            Assert.AreEqual("Can't write the message because the call is complete.", ex.Message);
         }
 
         [Test]
-        public void ClientStreamWriter_WriteAfterResponseHasFinished_ErrorThrown()
+        public async Task ClientStreamWriter_WriteAfterResponseHasFinished_ErrorThrown()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.OK));
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => call.RequestStream.WriteAsync(new HelloRequest())).DefaultTimeout();
 
             // Assert
-            var ex = Assert.ThrowsAsync<RpcException>(async () => await call.RequestStream.WriteAsync(new HelloRequest()).DefaultTimeout());
-            Assert.AreEqual(StatusCode.Cancelled, ex.Status.StatusCode);
+            Assert.AreEqual("Can't write the message because the call is complete.", ex.Message);
+            Assert.AreEqual(StatusCode.OK, call.GetStatus().StatusCode);
+        }
+
+        [Test]
+        public async Task ClientStreamWriter_CancelledBeforeCallStarts_ThrowsError()
+        {
+            // Arrange
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
+            {
+                return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.OK));
+            });
+            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+
+            // Act
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(cancellationToken: new CancellationToken(true)));
+
+            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.RequestStream.WriteAsync(new HelloRequest())).DefaultTimeout();
+
+            // Assert
+            Assert.AreEqual(StatusCode.Cancelled, ex.StatusCode);
+            Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
+        }
+
+        [Test]
+        public async Task ClientStreamWriter_CancelledBeforeCallStarts_ThrowOperationCanceledOnCancellation_ThrowsError()
+        {
+            // Arrange
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
+            {
+                return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.OK));
+            });
+            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.ThrowOperationCanceledOnCancellation = true);
+
+            // Act
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(cancellationToken: new CancellationToken(true)));
+
+            await ExceptionAssert.ThrowsAsync<OperationCanceledException>(() => call.RequestStream.WriteAsync(new HelloRequest())).DefaultTimeout();
+
+            // Assert
+            Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
+        }
+
+        [Test]
+        public async Task ClientStreamWriter_CallThrowsException_WriteAsyncThrowsError()
+        {
+            // Arrange
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
+            {
+                return Task.FromException<HttpResponseMessage>(new InvalidOperationException("Error!"));
+            });
+            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+
+            // Act
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+
+            var ex = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => call.RequestStream.WriteAsync(new HelloRequest())).DefaultTimeout();
+
+            // Assert
+            Assert.AreEqual("Can't write the message because the call is complete.", ex.Message);
+            Assert.AreEqual(StatusCode.Internal, call.GetStatus().StatusCode);
         }
     }
 }

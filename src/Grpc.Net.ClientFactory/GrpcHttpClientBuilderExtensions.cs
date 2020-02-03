@@ -18,6 +18,7 @@
 
 using System;
 using Grpc.Core.Interceptors;
+using Grpc.Net.Client;
 using Grpc.Net.ClientFactory;
 using Microsoft.Extensions.Options;
 
@@ -28,6 +29,65 @@ namespace Microsoft.Extensions.DependencyInjection
     /// </summary>
     public static class GrpcHttpClientBuilderExtensions
     {
+        /// <summary>
+        /// Adds a delegate that will be used to configure the channel for a gRPC client.
+        /// </summary>
+        /// <param name="builder">The <see cref="IHttpClientBuilder"/>.</param>
+        /// <param name="configureChannel">A delegate that is used to configure a <see cref="GrpcChannelOptions"/>.</param>
+        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+        public static IHttpClientBuilder ConfigureChannel(this IHttpClientBuilder builder, Action<IServiceProvider, GrpcChannelOptions> configureChannel)
+        {
+            if (builder == null)
+            {
+                throw new ArgumentNullException(nameof(builder));
+            }
+
+            if (configureChannel == null)
+            {
+                throw new ArgumentNullException(nameof(configureChannel));
+            }
+
+            ValidateGrpcClient(builder);
+
+            builder.Services.AddTransient<IConfigureOptions<GrpcClientFactoryOptions>>(services =>
+            {
+                return new ConfigureNamedOptions<GrpcClientFactoryOptions>(builder.Name, options =>
+                {
+                    options.ChannelOptionsActions.Add(o => configureChannel(services, o));
+                });
+            });
+
+            return builder;
+        }
+
+        /// <summary>
+        /// Adds a delegate that will be used to configure the channel for a gRPC client.
+        /// </summary>
+        /// <param name="builder">The <see cref="IHttpClientBuilder"/>.</param>
+        /// <param name="configureChannel">A delegate that is used to configure a <see cref="GrpcChannelOptions"/>.</param>
+        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+        public static IHttpClientBuilder ConfigureChannel(this IHttpClientBuilder builder, Action<GrpcChannelOptions> configureChannel)
+        {
+            if (builder == null)
+            {
+                throw new ArgumentNullException(nameof(builder));
+            }
+
+            if (configureChannel == null)
+            {
+                throw new ArgumentNullException(nameof(configureChannel));
+            }
+
+            ValidateGrpcClient(builder);
+
+            builder.Services.Configure<GrpcClientFactoryOptions>(builder.Name, options =>
+            {
+                options.ChannelOptionsActions.Add(configureChannel);
+            });
+
+            return builder;
+        }
+
         /// <summary>
         /// Adds a delegate that will be used to create an additional inteceptor for a gRPC client.
         /// </summary>
@@ -46,9 +106,11 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentNullException(nameof(configureInvoker));
             }
 
+            ValidateGrpcClient(builder);
+
             builder.Services.AddTransient<IConfigureOptions<GrpcClientFactoryOptions>>(services =>
             {
-                return new ConfigureNamedOptions<GrpcClientFactoryOptions>(builder.Name, (options) =>
+                return new ConfigureNamedOptions<GrpcClientFactoryOptions>(builder.Name, options =>
                 {
                     options.Interceptors.Add(configureInvoker(services));
                 });
@@ -75,6 +137,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentNullException(nameof(configureInvoker));
             }
 
+            ValidateGrpcClient(builder);
+
             builder.Services.Configure<GrpcClientFactoryOptions>(builder.Name, options =>
             {
                 options.Interceptors.Add(configureInvoker());
@@ -97,12 +161,33 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentNullException(nameof(builder));
             }
 
+            ValidateGrpcClient(builder);
+
             builder.AddInterceptor(serviceProvider =>
             {
                 return serviceProvider.GetRequiredService<TInterceptor>();
             });
 
             return builder;
+        }
+
+        private static void ValidateGrpcClient(IHttpClientBuilder builder)
+        {
+            // Validate the builder is for a gRPC client
+            foreach (var service in builder.Services)
+            {
+                if (service.ServiceType == typeof(IConfigureOptions<GrpcClientFactoryOptions>))
+                {
+                    // Builder is from AddGrpcClient if options have been configured with the same name
+                    var namedOptions = service.ImplementationInstance as ConfigureNamedOptions<GrpcClientFactoryOptions>;
+                    if (namedOptions != null && string.Equals(builder.Name, namedOptions.Name, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException($"{nameof(AddInterceptor)} must be used with a gRPC client.");
         }
     }
 }

@@ -16,16 +16,37 @@
 
 #endregion
 
+using System;
 using System.Net.Http;
+using Grpc.Net.Client.Internal;
 using Microsoft.Extensions.Logging;
 
 namespace Grpc.Net.Client.Tests.Infrastructure
 {
     internal static class HttpClientCallInvokerFactory
     {
-        public static HttpClientCallInvoker Create(HttpClient httpClient, ILoggerFactory? loggerFactory = null)
+        public static HttpClientCallInvoker Create(
+            HttpClient httpClient,
+            ILoggerFactory? loggerFactory = null,
+            ISystemClock? systemClock = null,
+            Action<GrpcChannelOptions>? configure = null,
+            bool? disableClientDeadlineTimer = null)
         {
-            return new HttpClientCallInvoker(httpClient, loggerFactory);
+            var channelOptions = new GrpcChannelOptions
+            {
+                LoggerFactory = loggerFactory,
+                HttpClient = httpClient
+            };
+            configure?.Invoke(channelOptions);
+
+            var channel = GrpcChannel.ForAddress(httpClient.BaseAddress, channelOptions);
+            channel.Clock = systemClock ?? SystemClock.Instance;
+            if (disableClientDeadlineTimer != null)
+            {
+                channel.DisableClientDeadlineTimer = disableClientDeadlineTimer.Value;
+            }
+
+            return new HttpClientCallInvoker(channel);
         }
     }
 }

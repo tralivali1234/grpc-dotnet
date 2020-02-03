@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 
@@ -29,21 +30,18 @@ namespace Grpc.Net.ClientFactory
     public class GrpcClientFactoryOptions
     {
         /// <summary>
-        /// The base address to use when making gRPC calls.
+        /// The address to use when making gRPC calls.
         /// </summary>
-        public Uri? BaseAddress { get; set; }
+        public Uri? Address { get; set; }
 
         /// <summary>
-        /// Gets a list of operations used to configure an <see cref="HttpClientCallInvoker"/>.
+        /// Gets a list of operations used to configure a <see cref="GrpcChannelOptions"/>.
         /// </summary>
-        public IList<Action<HttpClientCallInvoker>> CallInvokerActions { get; } = new List<Action<HttpClientCallInvoker>>();
+        public IList<Action<GrpcChannelOptions>> ChannelOptionsActions { get; } = new List<Action<GrpcChannelOptions>>();
 
         /// <summary>
         /// Gets a list of <see cref="Interceptor"/> instances used to configure a gRPC client pipeline.
         /// </summary>
         public IList<Interceptor> Interceptors { get; } = new List<Interceptor>();
-
-        // This property is set internally. It is used to check whether named configuration was explicitly set by the user
-        internal bool ExplicitlySet { get; set; }
     }
 }

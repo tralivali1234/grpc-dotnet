@@ -42,7 +42,7 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             HttpRequestMessage? httpRequestMessage = null;
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 httpRequestMessage = request;
 
@@ -51,14 +51,14 @@ namespace Grpc.Net.Client.Tests
                     Message = "Hello world"
                 };
 
-                var streamContent = await TestHelpers.CreateResponseContent(reply).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
 
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
 
             // Assert
             Assert.AreEqual("Hello world", rs.Message);
@@ -68,12 +68,17 @@ namespace Grpc.Net.Client.Tests
             Assert.AreEqual(HttpMethod.Post, httpRequestMessage.Method);
             Assert.AreEqual(new Uri("https://localhost/ServiceName/MethodName"), httpRequestMessage.RequestUri);
             Assert.AreEqual(new MediaTypeHeaderValue("application/grpc"), httpRequestMessage.Content.Headers.ContentType);
-            Assert.AreEqual(GrpcProtocolConstants.TEHeader, httpRequestMessage.Headers.TE.Single());
+            Assert.AreEqual(GrpcProtocolConstants.TEHeaderValue, httpRequestMessage.Headers.TE.Single().Value);
+            Assert.AreEqual("identity,gzip", httpRequestMessage.Headers.GetValues(GrpcProtocolConstants.MessageAcceptEncodingHeader).Single());
 
             var userAgent = httpRequestMessage.Headers.UserAgent.Single();
-            Assert.AreEqual(GrpcProtocolConstants.UserAgentHeader, userAgent);
             Assert.AreEqual("grpc-dotnet", userAgent.Product.Name);
             Assert.IsTrue(!string.IsNullOrEmpty(userAgent.Product.Version));
+
+            // Santity check that the user agent doesn't have the git hash in it and isn't too long.
+            // Sending a long user agent with each call has performance implications.
+            Assert.IsTrue(!userAgent.Product.Version.Contains('+'));
+            Assert.IsTrue(userAgent.Product.Version.Length <= 10);
         }
 
         [Test]
@@ -82,7 +87,7 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             HttpContent? content = null;
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 content = request.Content;
 
@@ -91,14 +96,14 @@ namespace Grpc.Net.Client.Tests
                     Message = "Hello world"
                 };
 
-                var streamContent = await TestHelpers.CreateResponseContent(reply).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
 
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest { Name = "World" });
+            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest { Name = "World" });
 
             // Assert
             Assert.AreEqual("Hello world", rs.Message);
@@ -106,16 +111,23 @@ namespace Grpc.Net.Client.Tests
             Assert.IsNotNull(content);
 
             var requestContent = await content!.ReadAsStreamAsync().DefaultTimeout();
-            var requestMessage = await requestContent.ReadSingleMessageAsync(NullLogger.Instance, TestHelpers.ServiceMethod.RequestMarshaller.Deserializer, CancellationToken.None).DefaultTimeout();
+            var requestMessage = await requestContent.ReadMessageAsync(
+                NullLogger.Instance,
+                ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
+                GrpcProtocolConstants.IdentityGrpcEncoding,
+                maximumMessageSize: null,
+                GrpcProtocolConstants.DefaultCompressionProviders,
+                singleMessage: true,
+                CancellationToken.None).AsTask().DefaultTimeout();
 
             Assert.AreEqual("World", requestMessage.Name);
         }
 
         [Test]
-        public void AsyncUnaryCall_NonOkStatusTrailer_ThrowRpcError()
+        public async Task AsyncUnaryCall_NonOkStatusTrailer_ThrowRpcError()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, new ByteArrayContent(Array.Empty<byte>()), StatusCode.Unimplemented);
                 return Task.FromResult(response);
@@ -123,10 +135,40 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var ex = Assert.ThrowsAsync<RpcException>(async () => await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest()));
+            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest()).ResponseAsync).DefaultTimeout();
 
             // Assert
             Assert.AreEqual(StatusCode.Unimplemented, ex.StatusCode);
+        }
+
+        [Test]
+        public async Task AsyncUnaryCall_SuccessTrailersOnly_ThrowNoMessageError()
+        {
+            // Arrange
+            HttpResponseMessage? responseMessage = null;
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
+            {
+                responseMessage = ResponseUtils.CreateResponse(HttpStatusCode.OK, new ByteArrayContent(Array.Empty<byte>()), grpcStatusCode: null);
+                responseMessage.Headers.Add(GrpcProtocolConstants.StatusTrailer, StatusCode.OK.ToString("D"));
+                responseMessage.Headers.Add(GrpcProtocolConstants.MessageTrailer, "Detail!");
+                return Task.FromResult(responseMessage);
+            });
+            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+
+            // Act
+            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var headers = await call.ResponseHeadersAsync.DefaultTimeout();
+            var response = await ExceptionAssert.ThrowsAsync<InvalidOperationException>(() => call.ResponseAsync).DefaultTimeout();
+
+            // Assert
+            Assert.NotNull(responseMessage);
+            Assert.IsFalse(responseMessage!.TrailingHeaders.Any()); // sanity check that there are no trailers
+
+            Assert.AreEqual(StatusCode.OK, call.GetStatus().StatusCode);
+            Assert.AreEqual("Detail!", call.GetStatus().Detail);
+
+            Assert.AreEqual(0, headers.Count);
+            Assert.AreEqual(0, call.GetTrailers().Count);
         }
     }
 }

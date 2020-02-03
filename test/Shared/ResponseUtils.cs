@@ -22,33 +22,47 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
-using Grpc.Net.Client.Internal;
 
 namespace Grpc.Tests.Shared
 {
     internal static class ResponseUtils
     {
+        internal static readonly MediaTypeHeaderValue GrpcContentTypeHeaderValue = new MediaTypeHeaderValue("application/grpc");
+        internal static readonly Version ProtocolVersion = new Version(2, 0);
+        internal const string MessageEncodingHeader = "grpc-encoding";
+        internal const string IdentityGrpcEncoding = "identity";
+        internal const string StatusTrailer = "grpc-status";
+
         public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode) =>
             CreateResponse(statusCode, string.Empty);
 
         public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode, string payload) =>
             CreateResponse(statusCode, new StringContent(payload));
 
-        public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode, HttpContent payload, StatusCode? grpcStatusCode = StatusCode.OK)
+        public static HttpResponseMessage CreateResponse(
+            HttpStatusCode statusCode,
+            HttpContent payload,
+            StatusCode? grpcStatusCode = StatusCode.OK,
+            string? grpcEncoding = null,
+            Version? version = null)
         {
-            payload.Headers.ContentType = GrpcProtocolConstants.GrpcContentTypeHeaderValue;
+            payload.Headers.ContentType = GrpcContentTypeHeaderValue;
 
             var message = new HttpResponseMessage(statusCode)
             {
-                Content = payload
+                Content = payload,
+                Version = version ?? ProtocolVersion
             };
+
+            message.Headers.Add(MessageEncodingHeader, grpcEncoding ?? IdentityGrpcEncoding);
 
             if (grpcStatusCode != null)
             {
-                message.TrailingHeaders.Add(GrpcProtocolConstants.StatusTrailer, grpcStatusCode.Value.ToString("D"));
+                message.TrailingHeaders.Add(StatusTrailer, grpcStatusCode.Value.ToString("D"));
             }
 
             return message;

@@ -17,11 +17,10 @@
 #endregion
 
 using System;
-using System.Net.Http;
-using Grpc.AspNetCore.Server.Features;
+using Grpc.AspNetCore.Server.ClientFactory;
 using Grpc.Core;
 using Grpc.Net.ClientFactory;
-using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -44,34 +43,38 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentNullException(nameof(builder));
             }
 
+            ValidateGrpcClient(builder);
+
+            builder.Services.TryAddSingleton<ContextPropagationInterceptor>();
             builder.Services.AddHttpContextAccessor();
             builder.Services.AddTransient<IConfigureOptions<GrpcClientFactoryOptions>>(services =>
             {
-                return new ConfigureNamedOptions<GrpcClientFactoryOptions>(builder.Name, (options) =>
+                return new ConfigureNamedOptions<GrpcClientFactoryOptions>(builder.Name, options =>
                 {
-                    options.CallInvokerActions.Add(client =>
-                    {
-                        var httpContextAccessor = services.GetRequiredService<IHttpContextAccessor>();
-
-                        var httpContext = httpContextAccessor.HttpContext;
-                        if (httpContext == null)
-                        {
-                            throw new InvalidOperationException("Unable to propagate server context values to the client. Can't find the current HttpContext.");
-                        }
-
-                        var serverCallContext = httpContext.Features.Get<IServerCallContextFeature>()?.ServerCallContext;
-                        if (serverCallContext == null)
-                        {
-                            throw new InvalidOperationException("Unable to propagate server context values to the client. Can't find the current gRPC ServerCallContext.");
-                        }
-
-                        client.CancellationToken = serverCallContext.CancellationToken;
-                        client.Deadline = serverCallContext.Deadline;
-                    });
+                    options.Interceptors.Add(services.GetRequiredService<ContextPropagationInterceptor>());
                 });
             });
 
             return builder;
+        }
+
+        private static void ValidateGrpcClient(IHttpClientBuilder builder)
+        {
+            // Validate the builder is for a gRPC client
+            foreach (var service in builder.Services)
+            {
+                if (service.ServiceType == typeof(IConfigureOptions<GrpcClientFactoryOptions>))
+                {
+                    // Builder is from AddGrpcClient if options have been configured with the same name
+                    var namedOptions = service.ImplementationInstance as ConfigureNamedOptions<GrpcClientFactoryOptions>;
+                    if (namedOptions != null && string.Equals(builder.Name, namedOptions.Name, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException($"{nameof(EnableCallContextPropagation)} must be used with a gRPC client.");
         }
     }
 }

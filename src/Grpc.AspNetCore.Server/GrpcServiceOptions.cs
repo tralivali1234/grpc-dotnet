@@ -18,7 +18,7 @@
 
 using System.Collections.Generic;
 using System.IO.Compression;
-using Grpc.AspNetCore.Server.Compression;
+using Grpc.Net.Compression;
 
 namespace Grpc.AspNetCore.Server
 {
@@ -27,17 +27,17 @@ namespace Grpc.AspNetCore.Server
     /// </summary>
     public class GrpcServiceOptions
     {
-        internal List<ICompressionProvider>? _compressionProviders;
+        internal IList<ICompressionProvider>? _compressionProviders;
 
         /// <summary>
         /// Gets or sets the maximum message size in bytes that can be sent from the server.
         /// </summary>
-        public int? SendMaxMessageSize { get; set; }
+        public int? MaxSendMessageSize { get; set; }
 
         /// <summary>
         /// Gets or sets the maximum message size in bytes that can be received by the server.
         /// </summary>
-        public int? ReceiveMaxMessageSize { get; set; }
+        public int? MaxReceiveMessageSize { get; set; }
 
         /// <summary>
         /// Gets or sets a value indicating whether detailed error messages are sent to the peer.
@@ -61,7 +61,7 @@ namespace Grpc.AspNetCore.Server
         /// <summary>
         /// Gets or sets the list of compression providers used to compress and decompress gRPC messages.
         /// </summary>
-        public List<ICompressionProvider> CompressionProviders
+        public IList<ICompressionProvider> CompressionProviders
         {
             get
             {

@@ -19,29 +19,19 @@
 using System.IO;
 using System.IO.Pipelines;
 using Google.Protobuf;
-using Grpc.AspNetCore.Server;
 using Grpc.AspNetCore.Server.Internal;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging.Abstractions;
+using Grpc.Tests.Shared;
 
 namespace Grpc.AspNetCore.Microbenchmarks.Internal
 {
     internal static class MessageHelpers
     {
-        private static readonly HttpContextServerCallContext TestServerCallContext = new HttpContextServerCallContext(new DefaultHttpContext(), new GrpcServiceOptions(), NullLogger.Instance);
-
-        static MessageHelpers()
+        public static void WriteMessage<T>(Stream stream, T message, HttpContextServerCallContext? callContext = null)
+            where T : class, IMessage
         {
-            TestServerCallContext.Initialize();
-        }
-
-        public static void WriteMessage<T>(Stream stream, T message) where T : IMessage
-        {
-            var messageData = message.ToByteArray();
-
             var pipeWriter = PipeWriter.Create(stream);
 
-            PipeExtensions.WriteMessageAsync(pipeWriter, messageData, TestServerCallContext, flush: true).GetAwaiter().GetResult();
+            PipeExtensions.WriteMessageAsync(pipeWriter, message, callContext ?? HttpContextServerCallContextHelper.CreateServerCallContext(), (r, c) => c.Complete(r.ToByteArray()), canFlush: true).GetAwaiter().GetResult();
         }
     }
 }

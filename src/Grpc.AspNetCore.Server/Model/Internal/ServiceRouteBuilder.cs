@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Grpc.AspNetCore.Server.Internal;
 using Grpc.Core;
+using Grpc.Shared;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -63,12 +64,11 @@ namespace Grpc.AspNetCore.Server.Model.Internal
             {
                 foreach (var method in serviceMethodProviderContext.Methods)
                 {
-                    var pattern = method.Method.FullName;
-                    var endpointBuilder = endpointRouteBuilder.MapPost(pattern, method.RequestDelegate);
+                    var endpointBuilder = endpointRouteBuilder.Map(method.Pattern, method.RequestDelegate);
 
                     endpointBuilder.Add(ep =>
                     {
-                        ep.DisplayName = $"gRPC - {pattern}";
+                        ep.DisplayName = $"gRPC - {method.Pattern.RawText}";
 
                         ep.Metadata.Add(new GrpcMethodMetadata(typeof(TService), method.Method));
                         foreach (var item in method.Metadata)
@@ -79,7 +79,7 @@ namespace Grpc.AspNetCore.Server.Model.Internal
 
                     endpointConventionBuilders.Add(endpointBuilder);
 
-                    Log.AddedServiceMethod(_logger, method.Method.Name, method.Method.ServiceName, method.Method.Type, pattern);
+                    Log.AddedServiceMethod(_logger, method.Method.Name, method.Method.ServiceName, method.Method.Type, method.Pattern.RawText);
                 }
             }
             else
@@ -109,7 +109,7 @@ namespace Grpc.AspNetCore.Server.Model.Internal
             if (serviceMethodsRegistry.Methods.Count == 0)
             {
                 // Only one unimplemented service endpoint is needed for the application
-                CreateUnimplementedEndpoint(endpointRouteBuilder, "{unimplementedService}/{unimplementedMethod}", "gRPC - Unimplemented service", serverCallHandlerFactory.CreateUnimplementedService());
+                CreateUnimplementedEndpoint(endpointRouteBuilder, "{unimplementedService}/{unimplementedMethod}", "Unimplemented service", serverCallHandlerFactory.CreateUnimplementedService());
             }
 
             // Return UNIMPLEMENTED status for missing method:
@@ -126,25 +126,26 @@ namespace Grpc.AspNetCore.Server.Model.Internal
                     continue;
                 }
 
-                CreateUnimplementedEndpoint(endpointRouteBuilder, serviceName + "/{unimplementedMethod}", $"gRPC - Unimplemented method for {serviceName}", serverCallHandlerFactory.CreateUnimplementedMethod());
+                CreateUnimplementedEndpoint(endpointRouteBuilder, serviceName + "/{unimplementedMethod}", $"Unimplemented method for {serviceName}", serverCallHandlerFactory.CreateUnimplementedMethod());
             }
         }
 
         private static void CreateUnimplementedEndpoint(IEndpointRouteBuilder endpointRouteBuilder, string pattern, string displayName, RequestDelegate requestDelegate)
         {
-            var routePattern = RoutePatternFactory.Parse(pattern, defaults: null, new { contentType = GrpcContentTypeConstraint.Instance });
+            var routePattern = RoutePatternFactory.Parse(pattern, defaults: null, new { contentType = GrpcUnimplementedConstraint.Instance });
             var endpointBuilder = endpointRouteBuilder.Map(routePattern, requestDelegate);
 
             endpointBuilder.Add(ep =>
             {
                 ep.DisplayName = $"gRPC - {displayName}";
-                ep.Metadata.Add(new HttpMethodMetadata(new[] { "POST" }));
+                // Don't add POST metadata here. It will return 405 status for other HTTP methods which isn't
+                // what we want. That check is made in a constraint instead.
             });
         }
 
-        private class GrpcContentTypeConstraint : IRouteConstraint
+        private class GrpcUnimplementedConstraint : IRouteConstraint
         {
-            public static readonly GrpcContentTypeConstraint Instance = new GrpcContentTypeConstraint();
+            public static readonly GrpcUnimplementedConstraint Instance = new GrpcUnimplementedConstraint();
 
             public bool Match(HttpContext httpContext, IRouter route, string routeKey, RouteValueDictionary values, RouteDirection routeDirection)
             {
@@ -153,10 +154,17 @@ namespace Grpc.AspNetCore.Server.Model.Internal
                     return false;
                 }
 
-                return GrpcProtocolHelpers.IsGrpcContentType(httpContext.Request.ContentType);
+                if (!HttpMethods.IsPost(httpContext.Request.Method))
+                {
+                    return false;
+                }
+
+                return CommonGrpcProtocolHelpers.IsContentType(GrpcProtocolConstants.GrpcContentType, httpContext.Request.ContentType) ||
+                    CommonGrpcProtocolHelpers.IsContentType(GrpcProtocolConstants.GrpcWebContentType, httpContext.Request.ContentType) ||
+                    CommonGrpcProtocolHelpers.IsContentType(GrpcProtocolConstants.GrpcWebTextContentType, httpContext.Request.ContentType);
             }
 
-            private GrpcContentTypeConstraint()
+            private GrpcUnimplementedConstraint()
             {
             }
         }

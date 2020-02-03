@@ -16,10 +16,13 @@
 
 #endregion
 
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.Http.Headers;
 using System.Reflection;
+using Grpc.Net.Compression;
 
 namespace Grpc.Net.Client.Internal
 {
@@ -34,32 +37,52 @@ namespace Grpc.Net.Client.Internal
         internal const string StatusTrailer = "grpc-status";
         internal const string MessageTrailer = "grpc-message";
 
+        internal const string IdentityGrpcEncoding = "identity";
+
         internal const string MessageAcceptEncodingHeader = "grpc-accept-encoding";
 
-        internal static readonly ProductInfoHeaderValue UserAgentHeader;
-        internal static readonly TransferCodingWithQualityHeaderValue TEHeader;
+        internal const string CompressionRequestAlgorithmHeader = "grpc-internal-encoding-request";
+
+        internal static readonly Dictionary<string, ICompressionProvider> DefaultCompressionProviders = new Dictionary<string, ICompressionProvider>(StringComparer.Ordinal)
+        {
+            ["gzip"] = new GzipCompressionProvider(System.IO.Compression.CompressionLevel.Fastest),
+            // deflate is not supported. .NET's DeflateStream does not support RFC1950 - https://github.com/dotnet/corefx/issues/7570
+        };
+
+        internal static readonly string DefaultMessageAcceptEncodingValue;
+
+        internal static readonly string UserAgentHeader;
+        internal static readonly string UserAgentHeaderValue;
+        internal static readonly string TEHeader;
+        internal static readonly string TEHeaderValue;
 
         static GrpcProtocolConstants()
         {
             var userAgent = "grpc-dotnet";
 
+            // Use the assembly file version in the user agent.
+            // We are not using `AssemblyInformationalVersionAttribute` because Source Link appends
+            // the git hash to it, and sending a long user agent has perf implications.
             var assemblyVersion = typeof(GrpcProtocolConstants)
                 .Assembly
-                .GetCustomAttributes<AssemblyInformationalVersionAttribute>()
+                .GetCustomAttributes<AssemblyFileVersionAttribute>()
                 .FirstOrDefault();
 
             Debug.Assert(assemblyVersion != null);
 
-            // assembly version attribute should always be present
-            // but in case it isn't then don't include version in user-agent
+            // Assembly file version attribute should always be present,
+            // but in case it isn't then don't include version in user-agent.
             if (assemblyVersion != null)
             {
-                userAgent += "/" + assemblyVersion.InformationalVersion;
+                userAgent += "/" + assemblyVersion.Version;
             }
 
-            UserAgentHeader = ProductInfoHeaderValue.Parse(userAgent);
+            UserAgentHeader = "User-Agent";
+            UserAgentHeaderValue = userAgent;
+            TEHeader = "TE";
+            TEHeaderValue = "trailers";
 
-            TEHeader = new TransferCodingWithQualityHeaderValue("trailers");
+            DefaultMessageAcceptEncodingValue = IdentityGrpcEncoding + "," + string.Join(',', DefaultCompressionProviders.Select(p => p.Key));
         }
     }
 }

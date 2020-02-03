@@ -39,9 +39,9 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncUnaryCall_MessageReturned_ReturnsTrailers()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Add("custom", "ABC");
                 response.TrailingHeaders.Add("custom-header", "value");
@@ -50,7 +50,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var message = await call;
             var trailers1 = call.GetTrailers();
             var trailers2 = call.GetTrailers();
@@ -64,9 +64,9 @@ namespace Grpc.Net.Client.Tests
         public async Task AsyncUnaryCall_HeadersReturned_ReturnsTrailers()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
                 response.Headers.Add("custom", "ABC");
                 response.TrailingHeaders.Add("custom-header", "value");
@@ -75,7 +75,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
             var trailers = call.GetTrailers();
 
@@ -89,7 +89,7 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 await tcs.Task.DefaultTimeout();
                 throw new Exception("Test shouldn't reach here.");
@@ -97,11 +97,11 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
 
             // Assert
-            Assert.AreEqual("Can't get the call trailers because the call is not complete.", ex.Message);
+            Assert.AreEqual("Can't get the call trailers because the call has not completed successfully.", ex.Message);
         }
 
         [Test]
@@ -110,19 +110,18 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 return Task.FromException<HttpResponseMessage>(new Exception("An error!"));
             });
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
 
             // Assert
-            Assert.AreEqual("Can't get the call trailers because an error occured when making the request.", ex.Message);
-            Assert.AreEqual("An error!", ex.InnerException?.InnerException?.Message);
+            Assert.AreEqual("Can't get the call trailers because the call has not completed successfully.", ex.Message);
         }
 
         [Test]
@@ -131,7 +130,7 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 await tcs.Task.DefaultTimeout();
                 throw new Exception("Test shouldn't reach here.");
@@ -139,11 +138,11 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
             var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
 
             // Assert
-            Assert.AreEqual("Can't get the call trailers because the call is not complete.", ex.Message);
+            Assert.AreEqual("Can't get the call trailers because the call has not completed successfully.", ex.Message);
         }
 
         [Test]
@@ -152,7 +151,7 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 await tcs.Task.DefaultTimeout();
                 throw new Exception("Test shouldn't reach here.");
@@ -160,20 +159,20 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
 
             // Assert
-            Assert.AreEqual("Can't get the call trailers because the call is not complete.", ex.Message);
+            Assert.AreEqual("Can't get the call trailers because the call has not completed successfully.", ex.Message);
         }
 
         [Test]
         public async Task AsyncServerStreamingCall_UnfinishedReader_ThrowsError()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(
+                var streamContent = await ClientTestHelpers.CreateResponsesContent(
                     new HelloReply
                     {
                         Message = "Hello world 1"
@@ -188,23 +187,23 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var responseStream = call.ResponseStream;
 
             Assert.IsTrue(await responseStream.MoveNext(CancellationToken.None).DefaultTimeout());
             var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
 
             // Assert
-            Assert.AreEqual("Can't get the call trailers because the call is not complete.", ex.Message);
+            Assert.AreEqual("Can't get the call trailers because the call has not completed successfully.", ex.Message);
         }
 
         [Test]
         public async Task AsyncServerStreamingCall_FinishedReader_ReturnsTrailers()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(
+                var streamContent = await ClientTestHelpers.CreateResponsesContent(
                     new HelloReply
                     {
                         Message = "Hello world 1"
@@ -221,7 +220,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
             var responseStream = call.ResponseStream;
 
             Assert.IsTrue(await responseStream.MoveNext(CancellationToken.None).DefaultTimeout());
@@ -239,9 +238,9 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var trailingHeadersWrittenTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
-                var content = (PushStreamContent)request.Content;
+                var content = (PushStreamContent<HelloRequest, HelloReply>)request.Content;
                 var stream = new SyncPointMemoryStream();
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, new StreamContent(stream));
 
@@ -250,7 +249,7 @@ namespace Grpc.Net.Client.Tests
                     // Add a response message after the client has completed
                     await content.PushComplete.DefaultTimeout();
 
-                    var messageData = await TestHelpers.GetResponseDataAsync(new HelloReply { Message = "Hello world" }).DefaultTimeout();
+                    var messageData = await ClientTestHelpers.GetResponseDataAsync(new HelloReply { Message = "Hello world" }).DefaultTimeout();
                     await stream.AddDataAndWait(messageData).DefaultTimeout();
                     await stream.AddDataAndWait(Array.Empty<byte>()).DefaultTimeout();
 
@@ -264,7 +263,7 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
             await call.RequestStream.CompleteAsync().DefaultTimeout();
             await Task.WhenAll(call.ResponseAsync, trailingHeadersWrittenTcs.Task).DefaultTimeout();
             var trailers = call.GetTrailers();
@@ -277,7 +276,7 @@ namespace Grpc.Net.Client.Tests
         public void AsyncClientStreamingCall_UncompleteWriter_ThrowsError()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var stream = new SyncPointMemoryStream();
 
@@ -287,18 +286,18 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
             var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
 
             // Assert
-            Assert.AreEqual("Can't get the call trailers because the call is not complete.", ex.Message);
+            Assert.AreEqual("Can't get the call trailers because the call has not completed successfully.", ex.Message);
         }
 
         [Test]
-        public void AsyncClientStreamingCall_NotFoundStatus_ThrowsError()
+        public void AsyncClientStreamingCall_NotFoundStatus_ReturnEmpty()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.NotFound);
                 return Task.FromResult(response);
@@ -306,18 +305,18 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var trailers = call.GetTrailers();
 
             // Assert
-            Assert.AreEqual("Bad gRPC response. Expected HTTP status code 200. Got status code: 404", ex.Message);
+            Assert.AreEqual(0, trailers.Count);
         }
 
         [Test]
-        public void AsyncClientStreamingCall_InvalidContentType_ThrowsError()
+        public void AsyncClientStreamingCall_InvalidContentType_ReturnEmpty()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(request =>
             {
                 var response = ResponseUtils.CreateResponse(HttpStatusCode.OK);
                 response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
@@ -326,11 +325,11 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(TestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var ex = Assert.Throws<InvalidOperationException>(() => call.GetTrailers());
+            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+            var trailers = call.GetTrailers();
 
             // Assert
-            Assert.AreEqual("Bad gRPC response. Invalid content-type value: text/plain", ex.Message);
+            Assert.AreEqual(0, trailers.Count);
         }
     }
 }

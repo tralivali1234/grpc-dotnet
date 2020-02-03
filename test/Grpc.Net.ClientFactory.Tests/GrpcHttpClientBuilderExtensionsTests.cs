@@ -18,13 +18,19 @@
 
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Google.Protobuf.WellKnownTypes;
 using Greet;
+using Grpc.Core;
 using Grpc.Net.ClientFactory;
 using Grpc.Tests.Shared;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
 namespace Grpc.AspNetCore.Server.ClientFactory.Tests
@@ -33,35 +39,83 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
     public class GrpcHttpClientBuilderExtensionsTests
     {
         [Test]
-        public void AddInterceptor_MultipleInstances_ExecutedInOrder()
+        public async Task ConfigureChannel_MaxSizeSet_ThrowMaxSizeError()
         {
             // Arrange
-            var list = new List<int>();
+            var request = new HelloRequest
+            {
+                Name = new string('!', 1024)
+            };
 
-            ServiceCollection services = new ServiceCollection();
+            var services = new ServiceCollection();
             services
                 .AddGrpcClient<Greeter.GreeterClient>(o =>
                 {
-                    o.BaseAddress = new Uri("http://localhost");
+                    o.Address = new Uri("http://localhost");
                 })
-                .AddInterceptor(() => new CallbackInterceptor(() => list.Add(1)))
-                .AddInterceptor(() => new CallbackInterceptor(() => list.Add(2)))
-                .AddInterceptor(() => new CallbackInterceptor(() => list.Add(3)))
+                .ConfigureChannel(options =>
+                {
+                    options.MaxSendMessageSize = 100;
+                })
                 .ConfigurePrimaryHttpMessageHandler(() =>
                 {
                     return new TestHttpMessageHandler();
                 });
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             // Act
             var clientFactory = serviceProvider.GetRequiredService<GrpcClientFactory>();
             var client = clientFactory.CreateClient<Greeter.GreeterClient>(nameof(Greeter.GreeterClient));
 
             // Handle bad response
-            Assert.ThrowsAsync<InvalidOperationException>(async () => await client.SayHelloAsync(new HelloRequest()));
+            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => client.SayHelloAsync(request).ResponseAsync).DefaultTimeout();
 
             // Assert
+            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+            Assert.AreEqual("Sending message exceeds the maximum configured message size.", ex.Status.Detail);
+        }
+
+        private class TestService
+        {
+            public TestService(int value)
+            {
+                Value = value;
+            }
+
+            public int Value { get; }
+        }
+
+        [Test]
+        public async Task AddInterceptor_MultipleInstances_ExecutedInOrder()
+        {
+            // Arrange
+            var list = new List<int>();
+
+            var services = new ServiceCollection();
+            services
+                .AddGrpcClient<Greeter.GreeterClient>(o =>
+                {
+                    o.Address = new Uri("http://localhost");
+                })
+                .AddInterceptor(() => new CallbackInterceptor(o => list.Add(1)))
+                .AddInterceptor(() => new CallbackInterceptor(o => list.Add(2)))
+                .AddInterceptor(() => new CallbackInterceptor(o => list.Add(3)))
+                .ConfigurePrimaryHttpMessageHandler(() =>
+                {
+                    return new TestHttpMessageHandler();
+                });
+
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+            // Act
+            var clientFactory = serviceProvider.GetRequiredService<GrpcClientFactory>();
+            var client = clientFactory.CreateClient<Greeter.GreeterClient>(nameof(Greeter.GreeterClient));
+
+            var response = await client.SayHelloAsync(new HelloRequest()).ResponseAsync.DefaultTimeout();
+
+            // Assert
+            Assert.IsNotNull(response);
             Assert.AreEqual(3, list.Count);
             Assert.AreEqual(1, list[0]);
             Assert.AreEqual(2, list[1]);
@@ -69,14 +123,61 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
         }
 
         [Test]
-        public void AddInterceptorGeneric_MultipleInstances_ExecutedInOrder()
+        public void AddInterceptor_OnGrpcClientFactoryWithServicesConfig_Success()
+        {
+            // Arrange
+            var services = new ServiceCollection();
+            services.AddSingleton<CallbackInterceptor>(s => new CallbackInterceptor(o => { }));
+
+            // Act
+            services
+                .AddGrpcClient<Greeter.GreeterClient>((s, o) => o.Address = new Uri("http://localhost"))
+                .AddInterceptor<CallbackInterceptor>();
+
+            // Assert
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+            Assert.IsNotNull(serviceProvider.GetRequiredService<Greeter.GreeterClient>());
+        }
+
+        [Test]
+        public void AddInterceptor_NotFromGrpcClientFactoryAndExistingGrpcClient_ThrowError()
+        {
+            // Arrange
+            var services = new ServiceCollection();
+            services.AddGrpcClient<Greeter.GreeterClient>();
+            var client = services.AddHttpClient("TestClient");
+
+            var ex = Assert.Throws<InvalidOperationException>(() => client.AddInterceptor(() => new CallbackInterceptor(o => { })));
+            Assert.AreEqual("AddInterceptor must be used with a gRPC client.", ex.Message);
+
+            ex = Assert.Throws<InvalidOperationException>(() => client.AddInterceptor(s => new CallbackInterceptor(o => { })));
+            Assert.AreEqual("AddInterceptor must be used with a gRPC client.", ex.Message);
+        }
+
+        [Test]
+        public void AddInterceptor_NotFromGrpcClientFactory_ThrowError()
+        {
+            // Arrange
+            var services = new ServiceCollection();
+            var client = services.AddHttpClient("TestClient");
+
+            var ex = Assert.Throws<InvalidOperationException>(() => client.AddInterceptor(() => new CallbackInterceptor(o => { })));
+            Assert.AreEqual("AddInterceptor must be used with a gRPC client.", ex.Message);
+
+            ex = Assert.Throws<InvalidOperationException>(() => client.AddInterceptor(s => new CallbackInterceptor(o => { })));
+            Assert.AreEqual("AddInterceptor must be used with a gRPC client.", ex.Message);
+        }
+
+        [Test]
+        public async Task AddInterceptorGeneric_MultipleInstances_ExecutedInOrder()
         {
             // Arrange
             var list = new List<int>();
             var i = 0;
 
-            ServiceCollection services = new ServiceCollection();
-            services.AddTransient<CallbackInterceptor>(s => new CallbackInterceptor(() =>
+            var services = new ServiceCollection();
+            services.AddTransient<CallbackInterceptor>(s => new CallbackInterceptor(o =>
             {
                 var increment = i += 2;
                 list.Add(increment);
@@ -84,7 +185,7 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
             services
                 .AddGrpcClient<Greeter.GreeterClient>(o =>
                 {
-                    o.BaseAddress = new Uri("http://localhost");
+                    o.Address = new Uri("http://localhost");
                 })
                 .AddInterceptor<CallbackInterceptor>()
                 .AddInterceptor<CallbackInterceptor>()
@@ -94,27 +195,43 @@ namespace Grpc.AspNetCore.Server.ClientFactory.Tests
                     return new TestHttpMessageHandler();
                 });
 
-            var serviceProvider = services.BuildServiceProvider();
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
             // Act
             var clientFactory = serviceProvider.GetRequiredService<GrpcClientFactory>();
             var client = clientFactory.CreateClient<Greeter.GreeterClient>(nameof(Greeter.GreeterClient));
 
-            // Handle bad response
-            Assert.ThrowsAsync<InvalidOperationException>(async () => await client.SayHelloAsync(new HelloRequest()));
+            var response = await client.SayHelloAsync(new HelloRequest()).ResponseAsync.DefaultTimeout();
 
             // Assert
+            Assert.IsNotNull(response);
             Assert.AreEqual(3, list.Count);
             Assert.AreEqual(2, list[0]);
             Assert.AreEqual(4, list[1]);
             Assert.AreEqual(6, list[2]);
         }
 
+        [Test]
+        public void AddInterceptorGeneric_NotFromGrpcClientFactory_ThrowError()
+        {
+            // Arrange
+            var services = new ServiceCollection();
+            var client = services.AddHttpClient("TestClient");
+
+            var ex = Assert.Throws<InvalidOperationException>(() => client.AddInterceptor<CallbackInterceptor>());
+            Assert.AreEqual("AddInterceptor must be used with a gRPC client.", ex.Message);
+        }
+
         private class TestHttpMessageHandler : HttpMessageHandler
         {
-            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
-                return Task.FromResult(new HttpResponseMessage());
+                // Get stream from request content so gRPC client serializes request message
+                _ = await request.Content.ReadAsStreamAsync();
+
+                var reply = new HelloReply { Message = "Hello world" };
+                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
+                return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             }
         }
     }

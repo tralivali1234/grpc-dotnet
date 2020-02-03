@@ -18,17 +18,20 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Greet;
-using Grpc.AspNetCore.Server.Reflection.Internal;
+using Grpc.AspNetCore.Server.Tests.Infrastructure;
 using Grpc.Core;
+using Grpc.Reflection;
 using Grpc.Reflection.V1Alpha;
 using Grpc.Tests.Shared;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
 namespace Grpc.AspNetCore.Server.Tests.Reflection
@@ -40,20 +43,23 @@ namespace Grpc.AspNetCore.Server.Tests.Reflection
         public async Task Create_ConfiguredGrpcEndpoint_EndpointReturnedFromReflectionService()
         {
             // Arrange
-            var services = new ServiceCollection();
-            services.AddGrpc();
-            services.AddLogging();
-            var serviceProvider = services.BuildServiceProvider();
+            var endpointRouteBuilder = new TestEndpointRouteBuilder();
 
-            var endpointRouteBuilder = new TestEndpointRouteBuilder(serviceProvider);
+            var services = ServicesHelpers.CreateServices();
+            services.AddGrpcReflection();
+            services.AddRouting();
+            services.AddSingleton<EndpointDataSource>(s =>
+            {
+                return new CompositeEndpointDataSource(endpointRouteBuilder.DataSources);
+            });
+
+            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+            endpointRouteBuilder.ServiceProvider = serviceProvider;
             endpointRouteBuilder.MapGrpcService<GreeterService>();
 
-            var dataSource = new CompositeEndpointDataSource(endpointRouteBuilder.DataSources);
-
-            var activator = new ReflectionGrpcServiceActivator(dataSource, NullLoggerFactory.Instance);
-
             // Act
-            var service = activator.Create();
+            var service = serviceProvider.GetRequiredService<ReflectionServiceImpl>();
 
             var reader = new TestAsyncStreamReader
             {
@@ -62,7 +68,7 @@ namespace Grpc.AspNetCore.Server.Tests.Reflection
                     ListServices = "" // list all services
                 }
             };
-            var writer = new TestServerStreamWriter();
+            var writer = new TestServerStreamWriter<ServerReflectionResponse>();
             var context = HttpContextServerCallContextHelper.CreateServerCallContext();
 
             await service.ServerReflectionInfo(reader, writer, context);
@@ -72,32 +78,20 @@ namespace Grpc.AspNetCore.Server.Tests.Reflection
             Assert.AreEqual(1, writer.Responses[0].ListServicesResponse.Service.Count);
 
             var serviceResponse = writer.Responses[0].ListServicesResponse.Service[0];
-            Assert.AreEqual("Greet.Greeter", serviceResponse.Name);
+            Assert.AreEqual("greet.Greeter", serviceResponse.Name);
         }
 
         private class GreeterService : Greeter.GreeterBase
         {
         }
 
-        private class TestServerStreamWriter : IServerStreamWriter<ServerReflectionResponse>
-        {
-            public WriteOptions? WriteOptions { get; set; }
-            public List<ServerReflectionResponse> Responses { get; } = new List<ServerReflectionResponse>();
-
-            public Task WriteAsync(ServerReflectionResponse message)
-            {
-                Responses.Add(message);
-                return Task.CompletedTask;
-            }
-        }
-
         private class TestAsyncStreamReader : IAsyncStreamReader<ServerReflectionRequest>
         {
             // IAsyncStreamReader<T> should declare Current as nullable
             // Suppress warning when overriding interface definition
-#pragma warning disable CS8612 // Nullability of reference types in type doesn't match implicitly implemented member.
+#pragma warning disable CS8613 // Nullability of reference types in return type doesn't match implicitly implemented member.
             public ServerReflectionRequest? Current { get; set; }
-#pragma warning restore CS8612 // Nullability of reference types in type doesn't match implicitly implemented member.
+#pragma warning restore CS8613 // Nullability of reference types in return type doesn't match implicitly implemented member.
             private bool _hasNext = true;
 
             public void Dispose()
@@ -115,14 +109,13 @@ namespace Grpc.AspNetCore.Server.Tests.Reflection
 
         private class TestEndpointRouteBuilder : IEndpointRouteBuilder
         {
-            public TestEndpointRouteBuilder(IServiceProvider serviceProvider)
+            public TestEndpointRouteBuilder()
             {
                 DataSources = new List<EndpointDataSource>();
-                ServiceProvider = serviceProvider;
             }
 
             public ICollection<EndpointDataSource> DataSources { get; }
-            public IServiceProvider ServiceProvider { get; }
+            public IServiceProvider? ServiceProvider { get; set; }
 
             public IApplicationBuilder CreateApplicationBuilder()
             {

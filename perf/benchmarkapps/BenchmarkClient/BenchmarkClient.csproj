@@ -7,10 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Protobuf Include="..\Shared\greet.proto" GrpcServices="Client" ClientType="LiteClientBase" />
-    <Protobuf Include="..\Shared\core-greet.proto" GrpcServices="Client" ClientType="ClientBase" />
-
-    <Compile Include="$(MSBuildThisFileDirectory)..\..\Shared\*.cs" />
+    <Protobuf Include="..\Shared\benchmark_service.proto" GrpcServices="Client" Link="Protos\benchmark_service.proto" />
+    <Protobuf Include="..\Shared\messages.proto" GrpcServices="Client" Link="Protos\messages.proto" />
+    <ProjectReference Include="..\..\..\src\Grpc.Net.Client.Web\Grpc.Net.Client.Web.csproj" />
 
     <ProjectReference Include="..\..\..\src\Grpc.Net.Client\Grpc.Net.Client.csproj" />
 
@@ -21,25 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\Shared\Certs\ca.crt" Link="Certs\ca.crt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="..\Shared\Certs\client.crt" Link="Certs\client.crt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="..\Shared\Certs\client.key" Link="Certs\client.key">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\Shared\Certs\ca.crt" Link="Certs\ca.crt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="..\Shared\Certs\client.crt" Link="Certs\client.crt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="..\Shared\Certs\client.key" Link="Certs\client.key">
+    <None Update="Certs\client.pfx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

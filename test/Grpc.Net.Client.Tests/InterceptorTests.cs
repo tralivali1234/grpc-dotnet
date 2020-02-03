@@ -44,14 +44,14 @@ namespace Grpc.Net.Client.Tests
             const string HeaderValue = "hello-world";
 
             string? requestHeaderValue = null;
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 if (request.Headers.TryGetValues(HeaderKey, out var values))
                 {
                     requestHeaderValue = values.Single();
                 }
 
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply { Message = "PASS" }).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply { Message = "PASS" }).DefaultTimeout();
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
 
@@ -65,7 +65,7 @@ namespace Grpc.Net.Client.Tests
                 return metadata;
             });
 
-            var result = callInvoker.BlockingUnaryCall(TestHelpers.ServiceMethod, Host, new CallOptions(), new HelloRequest());
+            var result = callInvoker.BlockingUnaryCall(ClientTestHelpers.ServiceMethod, Host, new CallOptions(), new HelloRequest());
 
             // Assert
             Assert.AreEqual("PASS", result.Message);
@@ -76,9 +76,9 @@ namespace Grpc.Net.Client.Tests
         public void Intercept_InterceptorOrder_ExecutedInReversedOrder()
         {
             // Arrange
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply { Message = "PASS" }).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply { Message = "PASS" }).DefaultTimeout();
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
 
@@ -86,24 +86,28 @@ namespace Grpc.Net.Client.Tests
             var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
             // Act
-            var callInvoker = invoker.Intercept(metadata =>
-            {
-                stringBuilder.Append("interceptor1");
-                return metadata;
-            }).Intercept(new CallbackInterceptor(() => stringBuilder.Append("array1")),
-                new CallbackInterceptor(() => stringBuilder.Append("array2")),
-                new CallbackInterceptor(() => stringBuilder.Append("array3")))
-            .Intercept(metadata =>
-            {
-                stringBuilder.Append("interceptor2");
-                return metadata;
-            }).Intercept(metadata =>
-            {
-                stringBuilder.Append("interceptor3");
-                return metadata;
-            });
+            var callInvoker = invoker
+                .Intercept(metadata =>
+                {
+                    stringBuilder.Append("interceptor1");
+                    return metadata;
+                })
+                .Intercept(
+                    new CallbackInterceptor(o => stringBuilder.Append("array1")),
+                    new CallbackInterceptor(o => stringBuilder.Append("array2")),
+                    new CallbackInterceptor(o => stringBuilder.Append("array3")))
+                .Intercept(metadata =>
+                {
+                    stringBuilder.Append("interceptor2");
+                    return metadata;
+                })
+                .Intercept(metadata =>
+                {
+                    stringBuilder.Append("interceptor3");
+                    return metadata;
+                });
 
-            var result = callInvoker.BlockingUnaryCall(TestHelpers.ServiceMethod, Host, new CallOptions(), new HelloRequest());
+            var result = callInvoker.BlockingUnaryCall(ClientTestHelpers.ServiceMethod, Host, new CallOptions(), new HelloRequest());
 
             // Assert
             Assert.AreEqual("PASS", result.Message);
@@ -116,12 +120,12 @@ namespace Grpc.Net.Client.Tests
             // Arrange
             var serviceMethod = new Method<string, string>(MethodType.Unary, "ServiceName", "Unary", Marshallers.StringMarshaller, Marshallers.StringMarshaller);
 
-            var httpClient = TestHelpers.CreateTestClient(async request =>
+            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
             {
                 var requestContent = await request.Content.ReadAsStreamAsync();
                 await requestContent.CopyToAsync(new MemoryStream());
 
-                var streamContent = await TestHelpers.CreateResponseContent(new HelloReply { Message = "PASS" }).DefaultTimeout();
+                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply { Message = "PASS" }).DefaultTimeout();
                 return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
             });
 

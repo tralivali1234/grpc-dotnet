@@ -23,11 +23,12 @@ using Grpc.Core;
 namespace Grpc.AspNetCore.Server.Internal
 {
     internal class HttpContextStreamWriter<TResponse> : IServerStreamWriter<TResponse>
+        where TResponse : class
     {
         private readonly HttpContextServerCallContext _context;
-        private readonly Func<TResponse, byte[]> _serializer;
+        private readonly Action<TResponse, SerializationContext> _serializer;
 
-        public HttpContextStreamWriter(HttpContextServerCallContext context, Func<TResponse, byte[]> serializer)
+        public HttpContextStreamWriter(HttpContextServerCallContext context, Action<TResponse, SerializationContext> serializer)
         {
             _context = context;
             _serializer = serializer;
