@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -17,47 +17,45 @@
 #endregion
 
 using System.CommandLine;
-using System.IO;
 using Grpc.Dotnet.Cli.Properties;
 
-namespace Grpc.Dotnet.Cli.Options
+namespace Grpc.Dotnet.Cli.Options;
+
+internal static class CommonOptions
 {
-    internal static class CommonOptions
+    public static Option<string> ProjectOption()
     {
-        public static Option ProjectOption()
+        var o = new Option<string>("--project", ["-p"])
         {
-            var o = new Option(
-                aliases: new[] { "-p", "--project" },
-                description: CoreStrings.ProjectOptionDescription);
-            o.Argument = new Argument<FileInfo> { Name = "project" };
-            return o;
-        }
+            Description = CoreStrings.ProjectOptionDescription
+        };
+        return o;
+    }
 
-        public static Option ServiceOption()
+    public static Option<Services> ServiceOption()
+    {
+        var o = new Option<Services>("--services", ["-s"])
         {
-            var o = new Option(
-                aliases: new[] { "-s", "--services" },
-                description: CoreStrings.ServiceOptionDescription);
-            o.Argument = new Argument<Services> { Name = "services" };
-            return o;
-        }
+            Description = CoreStrings.ServiceOptionDescription
+        };
+        return o;
+    }
 
-        public static Option AccessOption()
+    public static Option<Access> AccessOption()
+    {
+        var o = new Option<Access>("--access")
         {
-            var o = new Option(
-                aliases: new[] { "--access" },
-                description: CoreStrings.AccessOptionDescription);
-            o.Argument = new Argument<Access> { Name = "access" };
-            return o;
-        }
+            Description = CoreStrings.AccessOptionDescription
+        };
+        return o;
+    }
 
-        public static Option AdditionalImportDirsOption()
+    public static Option<string> AdditionalImportDirsOption()
+    {
+        var o = new Option<string>("--additional-import-dirs", ["-i"])
         {
-            var o = new Option(
-                aliases: new[] { "-i", "--additional-import-dirs" },
-                description: CoreStrings.AdditionalImportDirsOption);
-            o.Argument = new Argument<string> { Name = "dirs" };
-            return o;
-        }
+            Description = CoreStrings.AdditionalImportDirsOption
+        };
+        return o;
     }
 }

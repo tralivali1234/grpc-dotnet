@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,31 +16,27 @@
 
 #endregion
 
-using System;
-using Grpc.HealthCheck;
+using Grpc.AspNetCore.HealthChecks.Internal;
+using Grpc.Shared;
 using Microsoft.AspNetCore.Routing;
 
-namespace Microsoft.AspNetCore.Builder
+namespace Microsoft.AspNetCore.Builder;
+
+/// <summary>
+/// Provides extension methods for <see cref="IEndpointRouteBuilder"/> to add gRPC service endpoints.
+/// </summary>
+public static class GrpcHealthChecksEndpointRouteBuilderExtensions
 {
     /// <summary>
-    /// Provides extension methods for <see cref="IEndpointRouteBuilder"/> to add gRPC service endpoints.
+    /// Maps incoming requests to the gRPC health checks service.
+    /// This service can be queried to discover the health of the server.
     /// </summary>
-    public static class GrpcHealthChecksEndpointRouteBuilderExtensions
+    /// <param name="builder">The <see cref="IEndpointRouteBuilder"/> to add the route to.</param>
+    /// <returns>An <see cref="GrpcServiceEndpointConventionBuilder"/> for endpoints associated with the service.</returns>
+    public static GrpcServiceEndpointConventionBuilder MapGrpcHealthChecksService(this IEndpointRouteBuilder builder)
     {
-        /// <summary>
-        /// Maps incoming requests to the gRPC health checks service.
-        /// This service can be queried to discover the health of the server.
-        /// </summary>
-        /// <param name="builder">The <see cref="IEndpointRouteBuilder"/> to add the route to.</param>
-        /// <returns>An <see cref="GrpcServiceEndpointConventionBuilder"/> for endpoints associated with the service.</returns>
-        public static GrpcServiceEndpointConventionBuilder MapGrpcHealthChecksService(this IEndpointRouteBuilder builder)
-        {
-            if (builder == null)
-            {
-                throw new ArgumentNullException(nameof(builder));
-            }
+        ArgumentNullThrowHelper.ThrowIfNull(builder);
 
-            return builder.MapGrpcService<HealthServiceImpl>();
-        }
+        return builder.MapGrpcService<HealthServiceIntegration>();
     }
 }

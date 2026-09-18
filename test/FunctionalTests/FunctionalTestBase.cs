@@ -16,87 +16,169 @@
 
 #endregion
 
-using System;
-using System.Collections.Generic;
+using System.Globalization;
 using Grpc.AspNetCore.FunctionalTests.Infrastructure;
 using Grpc.Core;
 using Grpc.Net.Client;
+using Grpc.Net.Client.Configuration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NUnit.Framework;
 
-namespace Grpc.AspNetCore.FunctionalTests
+namespace Grpc.AspNetCore.FunctionalTests;
+
+public class FunctionalTestBase
 {
-    public class FunctionalTestBase
+    private GrpcTestContext? _testContext;
+    private GrpcChannel? _channel;
+
+    protected GrpcTestFixture<FunctionalTestsWebsite.Startup> Fixture { get; private set; } = default!;
+
+    protected ILoggerFactory LoggerFactory => _testContext!.LoggerFactory;
+
+    protected ILogger Logger => _testContext!.Logger;
+
+    protected GrpcChannel Channel => _channel ??= CreateChannel();
+
+    protected GrpcChannel CreateChannel(bool useHandler = false, ServiceConfig? serviceConfig = null,
+        int? maxRetryAttempts = null, long? maxRetryBufferSize = null, long? maxRetryBufferPerCallSize = null,
+        int? maxReceiveMessageSize = null, bool? throwOperationCanceledOnCancellation = null)
     {
-        private GrpcTestContext? _testContext;
-        private GrpcChannel? _channel;
-
-        protected GrpcTestFixture<FunctionalTestsWebsite.Startup> Fixture { get; private set; } = default!;
-
-        protected ILoggerFactory LoggerFactory => _testContext!.LoggerFactory;
-
-        protected ILogger Logger => _testContext!.Logger;
-
-        protected GrpcChannel Channel => _channel ??= CreateChannel();
-
-        protected GrpcChannel CreateChannel()
+        var options = new GrpcChannelOptions
         {
-            return GrpcChannel.ForAddress(Fixture.Client.BaseAddress, new GrpcChannelOptions
+            LoggerFactory = LoggerFactory,
+            ServiceConfig = serviceConfig,
+            ThrowOperationCanceledOnCancellation = throwOperationCanceledOnCancellation ?? false
+        };
+        // Don't overwrite defaults
+        if (maxRetryAttempts != null)
+        {
+            options.MaxRetryAttempts = maxRetryAttempts;
+        }
+        if (maxRetryBufferSize != null)
+        {
+            options.MaxRetryBufferSize = maxRetryBufferSize;
+        }
+        if (maxRetryBufferPerCallSize != null)
+        {
+            options.MaxRetryBufferPerCallSize = maxRetryBufferPerCallSize;
+        }
+        if (useHandler)
+        {
+            options.HttpHandler = Fixture.Handler;
+        }
+        else
+        {
+            options.HttpClient = Fixture.Client;
+        }
+        if (maxReceiveMessageSize != null)
+        {
+            options.MaxReceiveMessageSize = maxReceiveMessageSize;
+        }
+        return GrpcChannel.ForAddress(Fixture.Client.BaseAddress!, options);
+    }
+
+    protected virtual void ConfigureServices(IServiceCollection services) { }
+
+    [OneTimeSetUp]
+    public void OneTimeSetUp()
+    {
+        ServerRetryHelper.BindPortsWithRetry(port =>
+        {
+            Fixture = new GrpcTestFixture<FunctionalTestsWebsite.Startup>(
+                ConfigureServices,
+            addConfiguration: configuration =>
             {
-                LoggerFactory = LoggerFactory,
-                HttpClient = Fixture.Client
+                // An explicit (non-dynamic port) is required for HTTP/3 because the port will be shared
+                // between TCP and UDP. Dynamic ports don't support binding to both transports at the same time.
+                configuration["Http3Port"] = port.ToString(CultureInfo.InvariantCulture);
             });
+        }, NullLogger.Instance);
+    }
+
+    [OneTimeTearDown]
+    public void OneTimeTearDown()
+    {
+        Fixture.Dispose();
+    }
+
+    [SetUp]
+    public void SetUp()
+    {
+        _testContext = new GrpcTestContext();
+        Fixture.ServerLogged += _testContext.ServerFixtureOnServerLogged;
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        if (_testContext != null)
+        {
+            Fixture.ServerLogged -= _testContext.ServerFixtureOnServerLogged;
+            _testContext.Dispose();
         }
 
-        protected virtual void ConfigureServices(IServiceCollection services) { }
+        _channel = null;
+    }
 
-        [OneTimeSetUp]
-        public void OneTimeSetUp()
+    public IList<LogRecord> Logs => _testContext!.Scope.Logs;
+
+    public void ClearLogs() => _testContext!.Scope.ClearLogs();
+
+    protected void AssertHasLogRpcConnectionError(StatusCode statusCode, string detail)
+    {
+        AssertHasLog(LogLevel.Information, "RpcConnectionError", $"Error status code '{statusCode}' with detail '{detail}' raised.");
+    }
+
+    protected void AssertHasLog(LogLevel logLevel, string name, string? message = null, Func<Exception, bool>? exceptionMatch = null)
+    {
+        if (HasLog(logLevel, name, message, exceptionMatch))
         {
-            Fixture = new GrpcTestFixture<FunctionalTestsWebsite.Startup>(ConfigureServices);
+            return;
         }
 
-        [OneTimeTearDown]
-        public void OneTimeTearDown()
-        {
-            Fixture.Dispose();
-        }
+        Assert.Fail($"No match. Log level = {logLevel}, name = {name}, message = '{message ?? "(null)"}'.");
+    }
 
-        [SetUp]
-        public void SetUp()
+    protected bool HasLog(LogLevel logLevel, string name, string? message = null, Func<Exception, bool>? exceptionMatch = null)
+    {
+        return Logs.Any(r =>
         {
-            _testContext = new GrpcTestContext();
-            Fixture.ServerLogged += _testContext.ServerFixtureOnServerLogged;
-        }
-
-        [TearDown]
-        public void TearDown()
-        {
-            if (_testContext != null)
+            var match = r.LogLevel == logLevel && r.EventId.Name == name && (r.Message == message || message == null);
+            if (exceptionMatch != null)
             {
-                Fixture.ServerLogged -= _testContext.ServerFixtureOnServerLogged;
-                _testContext.Dispose();
+                match = match && r.Exception != null && exceptionMatch(r.Exception);
             }
+            return match;
+        });
+    }
 
-            _channel = null;
-        }
+    protected bool HasLogException(Func<Exception, bool> exceptionMatch)
+    {
+        return Logs.Any(x => x.Exception != null && exceptionMatch(x.Exception));
+    }
 
-        public IList<LogRecord> Logs => _testContext!.Scope.Logs;
+    protected void SetExpectedErrorsFilter(Func<LogRecord, bool> expectedErrorsFilter)
+    {
+        _testContext!.Scope.ExpectedErrorsFilter = expectedErrorsFilter;
+    }
 
-        protected void SetExpectedErrorsFilter(Func<LogRecord, bool> expectedErrorsFilter)
+    protected static string? GetRpcExceptionDetail(Exception? ex)
+    {
+        if (ex is RpcException rpcException)
         {
-            _testContext!.Scope.ExpectedErrorsFilter = expectedErrorsFilter;
+            return rpcException.Status.Detail;
         }
 
-        protected static string? GetRpcExceptionDetail(Exception? ex)
-        {
-            if (ex is RpcException rpcException)
-            {
-                return rpcException.Status.Detail;
-            }
+        return null;
+    }
 
-            return null;
-        }
+    protected static bool IsWriteCanceledException(Exception ex)
+    {
+        return ex is InvalidOperationException ||
+            ex is IOException ||
+            ex is OperationCanceledException;
     }
 }

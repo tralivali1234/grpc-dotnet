@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -17,72 +17,79 @@
 #endregion
 
 using System.CommandLine;
-using System.CommandLine.Invocation;
-using System.IO;
-using System.Threading.Tasks;
 using Grpc.Dotnet.Cli.Internal;
 using Grpc.Dotnet.Cli.Options;
 using Grpc.Dotnet.Cli.Properties;
-using Microsoft.Build.Evaluation;
 
-namespace Grpc.Dotnet.Cli.Commands
+namespace Grpc.Dotnet.Cli.Commands;
+
+internal sealed class AddFileCommand : CommandBase
 {
-    internal class AddFileCommand : CommandBase
-    {
-        public AddFileCommand(IConsole console, FileInfo? projectPath)
-            : base(console, projectPath) { }
+    public AddFileCommand(ConsoleService console, string? projectPath, HttpClient httpClient)
+        : base(console, projectPath, httpClient) { }
 
-        public static Command Create()
+    public static Command Create(HttpClient httpClient)
+    {
+        var command = new Command(
+            name: "add-file",
+            description: CoreStrings.AddFileCommandDescription);
+
+        var projectOption = CommonOptions.ProjectOption();
+        var serviceOption = CommonOptions.ServiceOption();
+        var additionalImportDirsOption = CommonOptions.AdditionalImportDirsOption();
+        var accessOption = CommonOptions.AccessOption();
+        var filesArgument = new Argument<string[]>("files")
         {
-            var command = new Command(
-                name: "add-file",
-                description: CoreStrings.AddFileCommandDescription);
-            command.AddArgument(new Argument<string[]>
+            Description = CoreStrings.AddFileCommandArgumentDescription,
+            Arity = ArgumentArity.OneOrMore
+        };
+
+        command.Add(projectOption);
+        command.Add(serviceOption);
+        command.Add(accessOption);
+        command.Add(additionalImportDirsOption);
+        command.Add(filesArgument);
+
+        command.SetAction(
+            async (context) =>
             {
-                Name = "files",
-                Description = CoreStrings.AddFileCommandArgumentDescription,
-                Arity = ArgumentArity.OneOrMore
+                var project = context.GetValue(projectOption);
+                var services = context.GetValue(serviceOption);
+                var access = context.GetValue(accessOption);
+                var additionalImportDirs = context.GetValue(additionalImportDirsOption);
+                var files = context.GetValue(filesArgument) ?? [];
+
+                var console = new ConsoleService(context.InvocationConfiguration.Output, context.InvocationConfiguration.Error);
+                try
+                {
+                    var command = new AddFileCommand(console, project, httpClient);
+                    await command.AddFileAsync(services, access, additionalImportDirs, files);
+
+                    return 0;
+                }
+                catch (CLIToolException e)
+                {
+                    console.LogError(e);
+
+                    return -1;
+                }
             });
 
-            command.AddOption(CommonOptions.ProjectOption());
-            command.AddOption(CommonOptions.ServiceOption());
-            command.AddOption(CommonOptions.AdditionalImportDirsOption());
-            command.AddOption(CommonOptions.AccessOption());
+        return command;
+    }
 
-            command.Handler = CommandHandler.Create<IConsole, FileInfo, Services, Access, string, string[]>(
-                async (console, project, services, access, additionalImportDirs, files) =>
-                {
-                    try
-                    {
-                        var command = new AddFileCommand(console, project);
-                        await command.AddFileAsync(services, access, additionalImportDirs, files);
+    public async Task AddFileAsync(Services services, Access access, string? additionalImportDirs, string[] files)
+    {
+        var resolvedServices = ResolveServices(services);
+        await EnsureNugetPackagesAsync(resolvedServices);
+        files = GlobReferences(files);
 
-                        return 0;
-                    }
-                    catch (CLIToolException e)
-                    {
-                        console.LogError(e);
-
-                        return -1;
-                    }
-                });
-
-            return command;
-        }
-
-        public async Task AddFileAsync(Services services, Access access, string additionalImportDirs, string[] files)
+        foreach (var file in files)
         {
-            var resolvedServices = ResolveServices(services);
-            await EnsureNugetPackagesAsync(resolvedServices);
-            files = GlobReferences(files);
-
-            foreach (var file in files)
-            {
-                Console.Log(CoreStrings.LogAddFileReference, file);
-                AddProtobufReference(resolvedServices, additionalImportDirs, access, file, string.Empty);
-            }
-
-            Project.Save();
+            Console.Log(CoreStrings.LogAddFileReference, file);
+            AddProtobufReference(resolvedServices, additionalImportDirs, access, file, string.Empty);
         }
+
+        Project.Save();
     }
 }

@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,58 +16,92 @@
 
 #endregion
 
-using System;
-using System.Net.Http;
 using Grpc.AspNetCore.FunctionalTests.Infrastructure;
 using Grpc.Net.Client;
 using Grpc.Net.Client.Web;
+using NUnit.Framework;
 
-namespace Grpc.AspNetCore.FunctionalTests.Web
+namespace Grpc.AspNetCore.FunctionalTests.Web;
+
+public enum GrpcTestMode
 {
-    public enum GrpcTestMode
+    Grpc,
+    GrpcWeb,
+    GrpcWebText
+}
+
+public abstract class GrpcWebFunctionalTestBase : FunctionalTestBase
+{
+    public GrpcTestMode GrpcTestMode { get; }
+    public TestServerEndpointName EndpointName { get; }
+
+    protected GrpcWebFunctionalTestBase(GrpcTestMode grpcTestMode, TestServerEndpointName endpointName)
     {
-        Grpc,
-        GrpcWeb,
-        GrpcWebText
+        GrpcTestMode = grpcTestMode;
+        EndpointName = endpointName;
+
+        if (endpointName == TestServerEndpointName.Http3WithTls &&
+            !RequireHttp3Attribute.IsSupported(out var message))
+        {
+            Assert.Ignore(message);
+        }
     }
 
-    public abstract class GrpcWebFunctionalTestBase : FunctionalTestBase
+    protected HttpClient CreateGrpcWebClient()
     {
-        private readonly GrpcTestMode _grpcTestMode;
-        private readonly TestServerEndpointName _endpointName;
+        var grpcWebHandler = CreateGrpcWebHandlerCore();
 
-        protected GrpcWebFunctionalTestBase(GrpcTestMode grpcTestMode, TestServerEndpointName endpointName)
+        return Fixture.CreateClient(EndpointName, grpcWebHandler);
+    }
+
+    protected (HttpMessageHandler handler, Uri address) CreateGrpcWebHandler()
+    {
+        var grpcWebHandler = CreateGrpcWebHandlerCore();
+
+        return Fixture.CreateHandler(EndpointName, grpcWebHandler);
+    }
+
+    private GrpcWebHandler? CreateGrpcWebHandlerCore()
+    {
+        Version protocol;
+
+        if (EndpointName == TestServerEndpointName.Http1)
         {
-            _grpcTestMode = grpcTestMode;
-            _endpointName = endpointName;
+            protocol = new Version(1, 1);
+        }
+        else if (EndpointName == TestServerEndpointName.Http3WithTls)
+        {
+            protocol = new Version(3, 0);
+        }
+        else
+        {
+            protocol = new Version(2, 0);
         }
 
-        protected HttpClient CreateGrpcWebClient()
+        GrpcWebHandler? grpcWebHandler = null;
+        if (GrpcTestMode != GrpcTestMode.Grpc)
         {
-            var protocol = _endpointName == TestServerEndpointName.Http1
-                ? new Version(1, 1)
-                : new Version(2, 0);
-
-            GrpcWebHandler? grpcWebHandler = null;
-            if (_grpcTestMode != GrpcTestMode.Grpc)
+            var mode = GrpcTestMode == GrpcTestMode.GrpcWeb ? GrpcWebMode.GrpcWeb : GrpcWebMode.GrpcWebText;
+            grpcWebHandler = new GrpcWebHandler(mode)
             {
-                var mode = _grpcTestMode == GrpcTestMode.GrpcWeb ? GrpcWebMode.GrpcWeb : GrpcWebMode.GrpcWebText;
-                grpcWebHandler = new GrpcWebHandler(mode, protocol);
-            }
-
-            return Fixture.CreateClient(_endpointName, grpcWebHandler);
+#pragma warning disable CS0618 // Type or member is obsolete
+                HttpVersion = protocol
+#pragma warning restore CS0618 // Type or member is obsolete
+            };
         }
 
-        protected GrpcChannel CreateGrpcWebChannel()
+        return grpcWebHandler;
+    }
+
+    protected GrpcChannel CreateGrpcWebChannel()
+    {
+        var httpClient = CreateGrpcWebClient();
+        var channel = GrpcChannel.ForAddress(httpClient.BaseAddress!, new GrpcChannelOptions
         {
-            var httpClient = CreateGrpcWebClient();
-            var channel = GrpcChannel.ForAddress(httpClient.BaseAddress, new GrpcChannelOptions
-            {
-                HttpClient = httpClient,
-                LoggerFactory = LoggerFactory
-            });
+            HttpClient = httpClient,
+            LoggerFactory = LoggerFactory
+        });
 
-            return channel;
-        }
+        return channel;
     }
 }

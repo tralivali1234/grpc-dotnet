@@ -16,61 +16,54 @@
 
 #endregion
 
-using System.Threading.Tasks;
 using Greet;
 using Grpc.AspNetCore.FunctionalTests.Infrastructure;
 using Grpc.Core;
-using Grpc.Net.Client;
 using Grpc.Tests.Shared;
+using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 
-namespace Grpc.AspNetCore.FunctionalTests.Client
+namespace Grpc.AspNetCore.FunctionalTests.Client;
+
+[TestFixture]
+public class MaxMessageSizeTests : FunctionalTestBase
 {
-    [TestFixture]
-    public class MaxMessageSizeTests : FunctionalTestBase
+    [Test]
+    public async Task ReceivedMessageExceedsDefaultSize_ThrowError()
     {
-        [Test]
-        public async Task ReceivedMessageExceedsDefaultSize_ThrowError()
+        Task<HelloReply> ReturnLargeMessage(HelloRequest request, ServerCallContext context)
         {
-            Task<HelloReply> ReturnLargeMessage(HelloRequest request, ServerCallContext context)
+            // Return message is 4 MB + 1 B. Default receive size is 4 MB
+            return Task.FromResult(new HelloReply { Message = new string('!', (1024 * 1024 * 4) + 1) });
+        }
+
+        // Arrange
+        SetExpectedErrorsFilter(writeContext =>
+        {
+            if (writeContext.LoggerName == "Grpc.Net.Client.Internal.GrpcCall" &&
+                writeContext.EventId.Name == "ErrorReadingMessage" &&
+                writeContext.Message == "Error reading message.")
             {
-                // Return message is 4 MB + 1 B. Default receive size is 4 MB
-                return Task.FromResult(new HelloReply { Message = new string('!', (1024 * 1024 * 4) + 1) });
+                return true;
             }
 
-            // Arrange
-            SetExpectedErrorsFilter(writeContext =>
-            {
-                if (writeContext.LoggerName == "Grpc.Net.Client.Internal.GrpcCall" &&
-                    writeContext.EventId.Name == "ErrorReadingMessage" &&
-                    writeContext.Message == "Error reading message.")
-                {
-                    return true;
-                }
+            return false;
+        });
 
-                if (writeContext.LoggerName == "Grpc.Net.Client.Internal.GrpcCall" &&
-                    writeContext.EventId.Name == "GrpcStatusError" &&
-                    writeContext.Message == "Call failed with gRPC error status. Status code: 'ResourceExhausted', Message: 'Received message exceeds the maximum configured message size.'.")
-                {
-                    return true;
-                }
+        var method = Fixture.DynamicGrpc.AddUnaryMethod<HelloRequest, HelloReply>(ReturnLargeMessage);
 
-                return false;
-            });
+        var channel = CreateChannel();
+        channel.DisableClientDeadline = true;
 
-            var method = Fixture.DynamicGrpc.AddUnaryMethod<HelloRequest, HelloReply>(ReturnLargeMessage);
+        var client = TestClientFactory.Create(channel, method);
 
-            var channel = CreateChannel();
-            channel.DisableClientDeadlineTimer = true;
+        // Act
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => client.UnaryCall(new HelloRequest()).ResponseAsync).DefaultTimeout();
 
-            var client = TestClientFactory.Create(channel, method);
+        // Assert
+        Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+        Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
 
-            // Act
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => client.UnaryCall(new HelloRequest()).ResponseAsync).DefaultTimeout();
-
-            // Assert
-            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
-            Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
-        }
+        AssertHasLog(LogLevel.Information, "GrpcStatusError", "Call failed with gRPC error status. Status code: 'ResourceExhausted', Message: 'Received message exceeds the maximum configured message size.'.");
     }
 }

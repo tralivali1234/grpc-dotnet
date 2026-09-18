@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,30 +16,35 @@
 
 #endregion
 
-using System.CommandLine.Builder;
-using System.CommandLine.Invocation;
-using System.Threading.Tasks;
+using System.CommandLine;
 using Grpc.Dotnet.Cli.Commands;
 using Microsoft.Build.Locator;
 
-namespace Grpc.Dotnet.Cli
+namespace Grpc.Dotnet.Cli;
+
+public class Program
 {
-    public class Program
+    public static Task<int> Main(string[] args)
     {
-        public static Task<int> Main(string[] args)
+        MSBuildLocator.RegisterDefaults();
+
+        var rootCommand = BuildRootCommand(new HttpClient());
+        var result = rootCommand.Parse(args);
+
+        return result.InvokeAsync();
+    }
+
+    internal static RootCommand BuildRootCommand(HttpClient client)
+    {
+        var root = new RootCommand
         {
-            MSBuildLocator.RegisterDefaults();
+            AddFileCommand.Create(client),
+            AddUrlCommand.Create(client),
+            RefreshCommand.Create(client),
+            RemoveCommand.Create(client),
+            ListCommand.Create(client)
+        };
 
-            var parser = new CommandLineBuilder()
-                .AddCommand(AddFileCommand.Create())
-                .AddCommand(AddUrlCommand.Create())
-                .AddCommand(RefreshCommand.Create())
-                .AddCommand(RemoveCommand.Create())
-                .AddCommand(ListCommand.Create())
-                .UseDefaults()
-                .Build();
-
-            return parser.InvokeAsync(args);
-        }
+        return root;
     }
 }

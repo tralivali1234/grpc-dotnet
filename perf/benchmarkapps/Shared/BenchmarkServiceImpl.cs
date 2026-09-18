@@ -16,13 +16,11 @@
 
 #endregion
 
-using System.Threading.Tasks;
-using Grpc.Testing;
-using Grpc.Core;
 using Google.Protobuf;
-using System;
+using Grpc.Core;
+using Grpc.Testing;
 
-class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
+sealed class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
 {
 #if CLIENT_CERTIFICATE_AUTHENTICATION
     [Microsoft.AspNetCore.Authorization.Authorize]
@@ -42,9 +40,10 @@ class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
 
     public override async Task StreamingFromServer(SimpleRequest request, IServerStreamWriter<SimpleResponse> responseStream, ServerCallContext context)
     {
+        var response = CreateResponse(request);
         while (!context.CancellationToken.IsCancellationRequested)
         {
-            await responseStream.WriteAsync(CreateResponse(request));
+            await responseStream.WriteAsync(response);
         }
     }
 
@@ -66,7 +65,10 @@ class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
 
     public override async Task StreamingBothWays(IAsyncStreamReader<SimpleRequest> requestStream, IServerStreamWriter<SimpleResponse> responseStream, ServerCallContext context)
     {
-        var messageData = ByteString.CopyFrom(new byte[100]);
+        var response = new SimpleResponse
+        {
+            Payload = new Payload { Body = UnsafeByteOperations.UnsafeWrap(new byte[100]) }
+        };
         var clientComplete = false;
 
         var readTask = Task.Run(async () =>
@@ -82,10 +84,7 @@ class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
         // Write outgoing messages until client is complete
         while (!clientComplete)
         {
-            await responseStream.WriteAsync(new SimpleResponse
-            {
-                Payload = new Payload { Body = messageData }
-            });
+            await responseStream.WriteAsync(response);
         }
 
         await readTask;
@@ -93,7 +92,8 @@ class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
 
     public static SimpleResponse CreateResponse(SimpleRequest request)
     {
-        var body = ByteString.CopyFrom(new byte[request.ResponseSize]);
+        var data = request.ResponseSize == 0 ? Array.Empty<byte>() : new byte[request.ResponseSize];
+        var body = UnsafeByteOperations.UnsafeWrap(data);
 
         var payload = new Payload { Body = body };
         return new SimpleResponse { Payload = payload };

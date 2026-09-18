@@ -16,74 +16,76 @@
 
 #endregion
 
-using System;
-using System.IO;
-using System.Threading;
 using Microsoft.Extensions.Logging;
 
-namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
+namespace Grpc.AspNetCore.FunctionalTests.Infrastructure;
+
+public class ExecutionContextLoggingProvider : ILoggerProvider
 {
-    public class ExecutionContextLoggingProvider : ILoggerProvider
+    private readonly TextWriter _writer;
+    private readonly ExecutionContext _executionContext;
+    private readonly DateTimeOffset _timeStart;
+
+    public ExecutionContextLoggingProvider(TextWriter writer, ExecutionContext executionContext)
     {
+        _writer = writer;
+        _executionContext = executionContext;
+        _timeStart = DateTimeOffset.UtcNow;
+    }
+
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new ExecutionContextLogger(_timeStart, _writer, _executionContext, categoryName);
+    }
+
+    public void Dispose()
+    {
+    }
+
+    private class ExecutionContextLogger : ILogger
+    {
+        private readonly DateTimeOffset _timeStart;
         private readonly TextWriter _writer;
         private readonly ExecutionContext _executionContext;
-        private readonly DateTimeOffset _timeStart;
+        private readonly string _categoryName;
 
-        public ExecutionContextLoggingProvider(TextWriter writer, ExecutionContext executionContext)
+        public ExecutionContextLogger(DateTimeOffset timeStart, TextWriter writer, ExecutionContext executionContext, string categoryName)
         {
+            _timeStart = timeStart;
             _writer = writer;
             _executionContext = executionContext;
-            _timeStart = DateTimeOffset.UtcNow;
+            _categoryName = categoryName;
         }
 
-        public ILogger CreateLogger(string categoryName)
+#pragma warning disable CS8633 // Nullability in constraints for type parameter doesn't match the constraints for type parameter in implicitly implemented interface method'.
+        public IDisposable BeginScope<TState>(TState state)
         {
-            return new ExecutionContextLogger(_timeStart, _writer, _executionContext, categoryName);
+            return null!;
+        }
+#pragma warning restore CS8633 // Nullability in constraints for type parameter doesn't match the constraints for type parameter in implicitly implemented interface method'.
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
         }
 
-        public void Dispose()
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-        }
-
-        private class ExecutionContextLogger : ILogger
-        {
-            private readonly DateTimeOffset _timeStart;
-            private readonly TextWriter _writer;
-            private readonly ExecutionContext _executionContext;
-            private readonly string _categoryName;
-
-            public ExecutionContextLogger(DateTimeOffset timeStart, TextWriter writer, ExecutionContext executionContext, string categoryName)
+            // Log using the passed in execution context.
+            // In the case of NUnit, console output is only captured by the test
+            // if it is written in the test's execution context.
+            ExecutionContext.Run(_executionContext, s =>
             {
-                _timeStart = timeStart;
-                _writer = writer;
-                _executionContext = executionContext;
-                _categoryName = categoryName;
-            }
+                var timestamp = $"{(DateTimeOffset.UtcNow - _timeStart).TotalSeconds:N3}s";
 
-            public IDisposable? BeginScope<TState>(TState state)
-            {
-                return null;
-            }
+                var logLine = timestamp + " " + _categoryName + " - " + logLevel + ": " + formatter(state, exception);
 
-            public bool IsEnabled(LogLevel logLevel)
-            {
-                return true;
-            }
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
-            {
-                // Log using the passed in execution context.
-                // In the case of NUnit, console output is only captured by the test
-                // if it is written in the test's execution context.
-                ExecutionContext.Run(_executionContext, s =>
+                _writer.WriteLine(logLine);
+                if (exception != null)
                 {
-                    var timestamp = $"{(DateTimeOffset.UtcNow - _timeStart).TotalSeconds.ToString("N3")}s";
-
-                    var logLine = timestamp + " " + _categoryName + " - " + logLevel + ": " + formatter(state, exception);
-
-                    _writer.WriteLine(logLine);
-                }, null);
-            }
+                    _writer.WriteLine(exception);
+                }
+            }, null);
         }
     }
 }

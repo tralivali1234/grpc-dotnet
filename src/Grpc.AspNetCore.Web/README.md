@@ -1,64 +1,46 @@
-# Experimental project
-
-This is an experimental project. If you have issues or suggestions for features, please give feedback at https://github.com/grpc/grpc-dotnet/issues
-
----
-
-[gRPC-Web](https://grpc.io/blog/state-of-grpc-web/) allows gRPC to be used from browser applications. gRPC-Web enables using gRPC in new scenarios:
-
-- JavaScript browser applications can call gRPC services using the [gRPC-Web JavaScript client](https://github.com/grpc/grpc-web).
-- Blazor WebAssembly applications can call gRPC services using the .NET Core gRPC client.
-- gRPC services can be used in environments that don't have complete support for HTTP/2.
-- gRPC can be used with technologies not available in HTTP/2, e.g. Windows authentication.
-
-Grpc.AspNetCore.Web and Grpc.Net.Client.Web provide extensions to enable end-to-end gRPC-Web support for .NET Core.
-
-## Grpc.AspNetCore.Web
+# Grpc.AspNetCore.Web
 
 Grpc.AspNetCore.Web provides middleware that enables ASP.NET Core gRPC services to accept gRPC-Web calls.
 
-*Startup.cs*
+## Configure gRPC-Web
+
+In *Program.cs*:
 
 ```csharp
-public void ConfigureServices(IServiceCollection services)
-{
-    services.AddGrpc();
-    services.AddGrpcWeb(o => o.GrpcWebEnabled = true);
-}
+using GrpcGreeter.Services;
 
-public void Configure(IApplicationBuilder app)
-{
-    app.UseRouting();
-    app.UseGrpcWeb();
-    app.UseEndpoints(endpoints =>
-    {
-        endpoints.MapGrpcService<GreeterService>();
-    });
-}
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddGrpc();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+app.UseRouting();
+app.UseGrpcWeb(new GrpcWebOptions { DefaultEnabled = true });
+app.MapGrpcService<GreeterService>();
+
+app.Run();
 ```
 
-gRPC-Web can be enabled for all gRPC services by setting `GrpcWebOptions.GrpcWebEnabled = true`, or enabled on individual services with `EnableGrpcWeb()`:
+gRPC-Web can be enabled for all gRPC services by setting `GrpcWebOptions.DefaultEnabled = true`, or enabled on individual services with `EnableGrpcWeb()`:
 
 ```csharp
-app.UseEndpoints(endpoints =>
-{
-    endpoints.MapGrpcService<GreeterService>().EnableGrpcWeb();
-});
+app.MapGrpcService<GreeterService>().EnableGrpcWeb();
 ```
 
-## Grpc.Net.Client.Web
+### gRPC-Web and streaming
 
-Grpc.Net.Client.Web provides a HttpClient delegating handler that configures the .NET Core gRPC client to send gRPC-Web calls.
+Traditional gRPC over HTTP/2 supports streaming in all directions. gRPC-Web offers limited support for streaming:
 
-```csharp
-// Create channel
-var handler = ew GrpcWebHandler(GrpcWebMode.GrpcWebText, new HttpClientHandler());
-var channel = GrpcChannel.ForAddress("https://localhost:5001", new GrpcChannelOptions
-    {
-        HttpClient = new HttpClient(handler)
-    });
+* gRPC-Web browser clients don't support calling client streaming and bidirectional streaming methods.
+* gRPC-Web .NET clients don't support calling client streaming and bidirectional streaming methods over HTTP/1.1.
+* ASP.NET Core gRPC services hosted on Azure App Service and IIS don't support bidirectional streaming.
 
-// Make call with a client
-var client = Greeter.GreeterClient(channel);
-var response = await client.SayHelloAsync(new GreeterRequest { Name = ".NET" });
-```
+When using gRPC-Web, we only recommend the use of unary methods and server streaming methods.
+
+## Links
+
+* [Documentation](https://learn.microsoft.com/aspnet/core/grpc/browser)
+* [grpc-dotnet GitHub](https://github.com/grpc/grpc-dotnet)

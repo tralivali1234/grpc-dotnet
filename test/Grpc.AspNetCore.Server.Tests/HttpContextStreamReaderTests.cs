@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -17,9 +17,6 @@
 #endregion
 
 using System.IO.Pipelines;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using Greet;
 using Grpc.AspNetCore.Server.Internal;
 using Grpc.Tests.Shared;
@@ -28,66 +25,103 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging.Testing;
 using NUnit.Framework;
 
-namespace Grpc.AspNetCore.Server.Tests
+namespace Grpc.AspNetCore.Server.Tests;
+
+[TestFixture]
+public class HttpContextStreamReaderTests
 {
-    [TestFixture]
-    public class HttpContextStreamReaderTests
+    [Test]
+    public void MoveNext_AlreadyCancelledToken_CancelReturnImmediately()
     {
-        [Test]
-        public void MoveNext_AlreadyCancelledToken_CancelReturnImmediately()
+        // Arrange
+        var ms = new SyncPointMemoryStream();
+
+        var httpContext = new DefaultHttpContext();
+        var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext);
+        var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
+
+        // Act
+        var nextTask = reader.MoveNext(new CancellationToken(true));
+
+        // Assert
+        Assert.IsTrue(nextTask.IsCompleted);
+        Assert.IsTrue(nextTask.IsCanceled);
+    }
+
+    [Test]
+    public async Task MoveNext_TokenCancelledDuringMoveNext_CancelTask()
+    {
+        // Arrange
+        var ms = new SyncPointMemoryStream();
+
+        var testSink = new TestSink();
+        var testLoggerFactory = new TestLoggerFactory(testSink, enabled: true);
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Features.Set<IRequestBodyPipeFeature>(new TestRequestBodyPipeFeature(PipeReader.Create(ms)));
+        var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext, logger: testLoggerFactory.CreateLogger("Test"));
+        var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
+
+        var cts = new CancellationTokenSource();
+
+        var nextTask = reader.MoveNext(cts.Token);
+
+        Assert.IsFalse(nextTask.IsCompleted);
+        Assert.IsFalse(nextTask.IsCanceled);
+
+        cts.Cancel();
+
+        try
         {
-            // Arrange
-            var ms = new SyncPointMemoryStream();
-
-            var httpContext = new DefaultHttpContext();
-            var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext);
-            var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
-
-            // Act
-            var nextTask = reader.MoveNext(new CancellationToken(true));
-
-            // Assert
-            Assert.IsTrue(nextTask.IsCompleted);
-            Assert.IsTrue(nextTask.IsCanceled);
+            await nextTask;
+            Assert.Fail();
+        }
+        catch (OperationCanceledException)
+        {
         }
 
-        [Test]
-        public async Task MoveNext_TokenCancelledDuringMoveNext_CancelTask()
-        {
-            // Arrange
-            var ms = new SyncPointMemoryStream();
+        Assert.IsTrue(nextTask.IsCompleted);
+        Assert.IsTrue(nextTask.IsCanceled);
 
-            var testSink = new TestSink();
-            var testLoggerFactory = new TestLoggerFactory(testSink, enabled: true);
+        Assert.AreEqual(1, testSink.Writes.Count);
+        Assert.AreEqual("ReadingMessage", testSink.Writes.First().EventId.Name);
+    }
 
-            var httpContext = new DefaultHttpContext();
-            httpContext.Features.Set<IRequestBodyPipeFeature>(new TestRequestBodyPipeFeature(PipeReader.Create(ms)));
-            var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext, logger: testLoggerFactory.CreateLogger("Test"));
-            var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
+    [Test]
+    public async Task MoveNext_MultipleCalls_CurrentClearedBetweenCalls()
+    {
+        // Arrange
+        var ms = new SyncPointMemoryStream();
 
-            var cts = new CancellationTokenSource();
+        var testSink = new TestSink();
+        var testLoggerFactory = new TestLoggerFactory(testSink, enabled: true);
 
-            var nextTask = reader.MoveNext(cts.Token);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Features.Set<IRequestBodyPipeFeature>(new TestRequestBodyPipeFeature(PipeReader.Create(ms)));
+        var serverCallContext = HttpContextServerCallContextHelper.CreateServerCallContext(httpContext, logger: testLoggerFactory.CreateLogger("Test"));
+        var reader = new HttpContextStreamReader<HelloReply>(serverCallContext, MessageHelpers.ServiceMethod.ResponseMarshaller.ContextualDeserializer);
 
-            Assert.IsFalse(nextTask.IsCompleted);
-            Assert.IsFalse(nextTask.IsCanceled);
+        // Act
+        var nextTask = reader.MoveNext(CancellationToken.None);
 
-            cts.Cancel();
-
-            try
+        await ms.AddDataAndWait(new byte[]
             {
-                await nextTask;
-                Assert.Fail();
-            }
-            catch (TaskCanceledException)
-            {
-            }
+                0x00, // compression = 0
+                0x00,
+                0x00,
+                0x00,
+                0x00 // length = 0
+            }).DefaultTimeout();
 
-            Assert.IsTrue(nextTask.IsCompleted);
-            Assert.IsTrue(nextTask.IsCanceled);
+        Assert.IsTrue(await nextTask.DefaultTimeout());
+        Assert.IsNotNull(reader.Current);
 
-            Assert.AreEqual(1, testSink.Writes.Count);
-            Assert.AreEqual("ReadingMessage", testSink.Writes.First().EventId.Name);
-        }
+        nextTask = reader.MoveNext(CancellationToken.None);
+
+        Assert.IsFalse(nextTask.IsCompleted);
+        Assert.IsFalse(nextTask.IsCanceled);
+
+        // Assert
+        Assert.IsNull(reader.Current);
     }
 }

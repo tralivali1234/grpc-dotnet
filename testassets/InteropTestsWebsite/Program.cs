@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,65 +16,71 @@
 
 #endregion
 
-using System;
-using System.IO;
-using Microsoft.AspNetCore;
-using Microsoft.AspNetCore.Hosting;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
-namespace InteropTestsWebsite
+namespace InteropTestsWebsite;
+
+public class Program
 {
-    public class Program
+    private const LogLevel MinimumLogLevel = LogLevel.Debug;
+
+    public static void Main(string[] args)
     {
-        private const LogLevel MinimumLogLevel = LogLevel.Debug;
+        CreateHostBuilder(args).Build().Run();
+    }
 
-        public static void Main(string[] args)
-        {
-            CreateHostBuilder(args).Build().Run();
-        }
+    [UnconditionalSuppressMessage("AotAnalysis", "IL3050:RequiresDynamicCode", 
+        Justification = "DependencyInjection only used with safe types.")]
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices(services =>
+            {
+                services.AddLogging(builder => builder.SetMinimumLevel(MinimumLogLevel));
+            })
+            .ConfigureWebHostDefaults(webBuilder =>
+            {
+                webBuilder.ConfigureKestrel((context, options) =>
+                {
+                    // Support --port and --use_tls cmdline arguments normally supported
+                    // by gRPC interop servers.
+                    var http2Port = GetConfigValue<int>(context.Configuration, "port", 50052);
+                    var http1Port = GetConfigValue<int>(context.Configuration, "port_http1", -1);
+                    var http3Port = GetConfigValue<int>(context.Configuration, "port_http3", -1);
+                    var useTls = GetConfigValue<bool>(context.Configuration, "use_tls", false);
 
-        public static IHostBuilder CreateHostBuilder(string[] args) =>
-            Host.CreateDefaultBuilder(args)
-                .ConfigureServices(services =>
-                {
-                    services.AddLogging(builder => builder.SetMinimumLevel(MinimumLogLevel));
-                })
-                .ConfigureWebHostDefaults(webBuilder =>
-                {
-                    webBuilder.ConfigureKestrel((context, options) =>
+                    options.Limits.MinRequestBodyDataRate = null;
+                    options.ListenAnyIP(http2Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http2));
+                    if (http1Port != -1)
                     {
-                        // Support --port and --use_tls cmdline arguments normally supported
-                        // by gRPC interop servers.
-                        var http2Port = context.Configuration.GetValue<int>("port", 50052);
-                        var http1Port = context.Configuration.GetValue<int>("port_http1", -1);
-                        var useTls = context.Configuration.GetValue<bool>("use_tls", false);
+                        options.ListenAnyIP(http1Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http1));
+                    }
+                    if (http3Port != -1)
+                    {
+                        options.ListenAnyIP(http3Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http3));
+                    }
 
-                        options.Limits.MinRequestBodyDataRate = null;
-                        options.ListenAnyIP(http2Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http2));
-                        if (http1Port != -1)
+                    void ConfigureEndpoint(ListenOptions listenOptions, bool useTls, HttpProtocols httpProtocols)
+                    {
+                        Console.WriteLine($"Enabling connection encryption: {useTls}");
+
+                        if (useTls)
                         {
-                            options.ListenAnyIP(http1Port, o => ConfigureEndpoint(o, useTls, HttpProtocols.Http1));
+                            var basePath = Path.GetDirectoryName(AppContext.BaseDirectory);
+                            var certPath = Path.Combine(basePath!, "Certs", "server1.pfx");
+
+                            listenOptions.UseHttps(certPath, "1111");
                         }
-
-                        void ConfigureEndpoint(ListenOptions listenOptions, bool useTls, HttpProtocols httpProtocols)
-                        {
-                            Console.WriteLine($"Enabling connection encryption: {useTls}");
-
-                            if (useTls)
-                            {
-                                var basePath = Path.GetDirectoryName(typeof(Program).Assembly.Location);
-                                var certPath = Path.Combine(basePath!, "Certs", "server1.pfx");
-
-                                listenOptions.UseHttps(certPath, "1111");
-                            }
-                            listenOptions.Protocols = httpProtocols;
-                        }
-                    });
-                    webBuilder.UseStartup<Startup>();
+                        listenOptions.Protocols = httpProtocols;
+                    }
                 });
+                webBuilder.UseStartup<Startup>();
+            });
+
+    [UnconditionalSuppressMessage("TrimmingAnalysis", "IL2026:UnrecognizedReflectionPattern",
+        Justification = "Only primitive values retrieved from config.")]
+    private static TValue? GetConfigValue<TValue>(IConfiguration configuration, string key, TValue defaultValue)
+    {
+        return configuration.GetValue<TValue>(key, defaultValue);
     }
 }

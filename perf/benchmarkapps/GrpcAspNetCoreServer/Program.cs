@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,105 +16,172 @@
 
 #endregion
 
-using System;
-using System.IO;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Runtime;
 using Common;
-using Microsoft.AspNetCore;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 
-namespace GrpcAspNetCoreServer
+namespace GrpcAspNetCoreServer;
+
+public class Program
 {
-    public class Program
+    public static void Main(string[] args)
     {
-        public static void Main(string[] args)
-        {
-            CreateHostBuilder(args).Build().Run();
-        }
+        CreateHostBuilder(args).Build().Run();
+    }
 
-        public static IHostBuilder CreateHostBuilder(string[] args)
-        {
-            Console.WriteLine();
-            Console.WriteLine("ASP.NET Core gRPC Benchmarks");
-            Console.WriteLine("----------------------------");
+    [UnconditionalSuppressMessage("AotAnalysis", "IL3050:RequiresDynamicCode",
+        Justification = "DependencyInjection only used with safe types.")]
+    public static IHostBuilder CreateHostBuilder(string[] args)
+    {
+        var runtimeVersion = typeof(object).GetTypeInfo().Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "Unknown";
+        var isServerGC = GCSettings.IsServerGC;
+        var processorCount = Environment.ProcessorCount;
 
-            Console.WriteLine($"Current directory: {Directory.GetCurrentDirectory()}");
-            Console.WriteLine($"WebHostBuilder loading from: {typeof(WebHostBuilder).GetTypeInfo().Assembly.Location}");
+        Console.WriteLine();
+        Console.WriteLine("ASP.NET Core gRPC Benchmarks");
+        Console.WriteLine("----------------------------");
+        Console.WriteLine($"Args: {string.Join(' ', args)}");
+        Console.WriteLine($"Current directory: {Directory.GetCurrentDirectory()}");
+        Console.WriteLine($"WebHostBuilder loading from: {AppContext.BaseDirectory}");
+        Console.WriteLine($"NetCoreAppVersion: {runtimeVersion}");
+        Console.WriteLine($"{nameof(GCSettings.IsServerGC)}: {isServerGC}");
+        Console.WriteLine($"{nameof(Environment.ProcessorCount)}: {processorCount}");
 
-            var config = new ConfigurationBuilder()
-                .AddJsonFile("hosting.json", optional: true)
-                .AddEnvironmentVariables(prefix: "ASPNETCORE_")
-                .AddCommandLine(args)
-                .Build();
+        var config = new ConfigurationBuilder()
+            .AddJsonFile("hosting.json", optional: true)
+            .AddEnvironmentVariables(prefix: "ASPNETCORE_")
+            .AddCommandLine(args)
+            .Build();
 
-            var hostBuilder = Host.CreateDefaultBuilder(args)
-                .ConfigureWebHostDefaults(webBuilder =>
+        var hostBuilder = Host.CreateDefaultBuilder(args)
+            .ConfigureWebHostDefaults(webBuilder =>
+            {
+                webBuilder.UseContentRoot(Directory.GetCurrentDirectory());
+                webBuilder.UseConfiguration(config);
+                webBuilder.UseStartup<Startup>();
+
+                webBuilder.ConfigureKestrel((context, options) =>
                 {
-                    webBuilder.UseContentRoot(Directory.GetCurrentDirectory());
-                    webBuilder.UseConfiguration(config);
-                    webBuilder.UseStartup<Startup>();
+                    var endPoint = config.CreateIPEndPoint();
+                    var udsFileName = config["udsFileName"];
+                    var namedPipeName = config["namedPipeName"];
 
-                    webBuilder.ConfigureKestrel((context, options) =>
+                    if (!string.IsNullOrEmpty(udsFileName))
                     {
-                        var endPoint = config.CreateIPEndPoint();
+                        var socketPath = ResolveUdsPath(udsFileName);
+                        if (File.Exists(socketPath))
+                        {
+                            File.Delete(socketPath);
+                        }
 
+                        Console.WriteLine($"Socket path: {socketPath}");
+
+                        options.ListenUnixSocket(socketPath, listenOptions =>
+                        {
+                            ConfigureListenOptions(listenOptions, config, endPoint);
+                        });
+                    }
+                    else if (!string.IsNullOrEmpty(namedPipeName))
+                    {
+                        Console.WriteLine($"Named pipe name: {namedPipeName}");
+                        options.ListenNamedPipe(namedPipeName, listenOptions =>
+                        {
+                            ConfigureListenOptions(listenOptions, config, endPoint);
+                        });
+                    }
+                    else
+                    {
                         // ListenAnyIP will work with IPv4 and IPv6.
                         // Chosen over Listen+IPAddress.Loopback, which would have a 2 second delay when
                         // creating a connection on a local Windows machine.
                         options.ListenAnyIP(endPoint.Port, listenOptions =>
                         {
-                            var protocol = config["protocol"] ?? "";
-
-                            Console.WriteLine($"Protocol: {protocol}");
-
-                            if (protocol.Equals("h2", StringComparison.OrdinalIgnoreCase))
-                            {
-                                listenOptions.Protocols = HttpProtocols.Http1AndHttp2;
-
-                                var basePath = Path.GetDirectoryName(typeof(Program).Assembly.Location);
-                                var certPath = Path.Combine(basePath!, "Certs/testCert.pfx");
-                                listenOptions.UseHttps(certPath, "testPassword", httpsOptions =>
-                                {
-#if CLIENT_CERTIFICATE_AUTHENTICATION
-                                    httpsOptions.ClientCertificateMode = Microsoft.AspNetCore.Server.Kestrel.Https.ClientCertificateMode.AllowCertificate;
-#endif
-                                });
-                            }
-                            else if (protocol.Equals("h2c", StringComparison.OrdinalIgnoreCase))
-                            {
-                                listenOptions.Protocols = HttpProtocols.Http2;
-                            }
-                            else if (protocol.Equals("http1", StringComparison.OrdinalIgnoreCase))
-                            {
-                                listenOptions.Protocols = HttpProtocols.Http1;
-                            }
-                            else
-                            {
-                                throw new InvalidOperationException($"Unexpected protocol: {protocol}");
-                            }
+                            ConfigureListenOptions(listenOptions, config, endPoint);
                         });
-                    });
-                })
-                .ConfigureLogging(loggerFactory =>
-                {
-                    loggerFactory.ClearProviders();
-
-                    if (Enum.TryParse<LogLevel>(config["LogLevel"], out var logLevel))
-                    {
-                        Console.WriteLine($"Console Logging enabled with level '{logLevel}'");
-                        loggerFactory.AddConsole(o => o.TimestampFormat = "ss.ffff ").SetMinimumLevel(logLevel);
                     }
-                })
-                .UseDefaultServiceProvider((context, options) =>
-                {
-                    options.ValidateScopes = context.HostingEnvironment.IsDevelopment();
+
+                    // Other gRPC servers don't include a server header
+                    options.AddServerHeader = false;
                 });
 
-            return hostBuilder;
+                webBuilder.UseSockets(options =>
+                {
+                    options.WaitForDataBeforeAllocatingBuffer = false;
+                });
+            })
+            .ConfigureLogging(loggerFactory =>
+            {
+                loggerFactory.ClearProviders();
+
+                if (Enum.TryParse<LogLevel>(config["LogLevel"], out var logLevel) && logLevel != LogLevel.None)
+                {
+                    Console.WriteLine($"Console Logging enabled with level '{logLevel}'");
+
+                    loggerFactory.AddSimpleConsole(o => o.TimestampFormat = "ss.ffff ")
+                                 .SetMinimumLevel(logLevel);
+                }
+            })
+            .UseDefaultServiceProvider((context, options) =>
+            {
+                options.ValidateScopes = context.HostingEnvironment.IsDevelopment();
+            });
+
+        return hostBuilder;
+    }
+
+    private static string ResolveUdsPath(string udsFileName) => Path.Combine(Path.GetTempPath(), udsFileName);
+
+    private static void ConfigureListenOptions(ListenOptions listenOptions, IConfigurationRoot config, System.Net.IPEndPoint endPoint)
+    {
+        var basePath = Path.GetDirectoryName(AppContext.BaseDirectory);
+        var certPath = Path.Combine(basePath!, "Certs", "server1.pfx");
+
+        var protocol = config["protocol"] ?? "";
+        bool.TryParse(config["enableCertAuth"], out var enableCertAuth);
+
+        Console.WriteLine($"Address: {endPoint.Address}:{endPoint.Port}, Protocol: {protocol}");
+        Console.WriteLine($"Certificate authentication: {enableCertAuth}");
+
+        if (protocol.Equals("h2", StringComparison.OrdinalIgnoreCase))
+        {
+            listenOptions.Protocols = HttpProtocols.Http1AndHttp2;
+
+            listenOptions.UseHttps(certPath, "1111", httpsOptions =>
+            {
+                if (enableCertAuth)
+                {
+                    httpsOptions.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
+                    httpsOptions.AllowAnyClientCertificate();
+                }
+            });
+        }
+        else if (protocol.Equals("h3", StringComparison.OrdinalIgnoreCase))
+        {
+            listenOptions.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
+
+            listenOptions.UseHttps(certPath, "1111", httpsOptions =>
+            {
+                if (enableCertAuth)
+                {
+                    httpsOptions.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
+                    httpsOptions.AllowAnyClientCertificate();
+                }
+            });
+        }
+        else if (protocol.Equals("h2c", StringComparison.OrdinalIgnoreCase))
+        {
+            listenOptions.Protocols = HttpProtocols.Http2;
+        }
+        else if (protocol.Equals("http1", StringComparison.OrdinalIgnoreCase))
+        {
+            listenOptions.Protocols = HttpProtocols.Http1;
+        }
+        else
+        {
+            throw new InvalidOperationException($"Unexpected protocol: {protocol}");
         }
     }
 }

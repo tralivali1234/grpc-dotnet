@@ -16,20 +16,27 @@
 
 #endregion
 
-using System.Threading.Tasks;
 using Authorize;
 using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 
-namespace FunctionalTestsWebsite.Services
+namespace FunctionalTestsWebsite.Services;
+
+[Authorize(JwtBearerDefaults.AuthenticationScheme)]
+public class AuthorizedGreeter : Authorize.AuthorizedGreeter.AuthorizedGreeterBase
 {
-    [Authorize(JwtBearerDefaults.AuthenticationScheme)]
-    public class AuthorizedGreeter : Authorize.AuthorizedGreeter.AuthorizedGreeterBase
+    public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context)
     {
-        public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context)
+        var claims = context.GetHttpContext().User.Claims.ToList();
+
+        var reply = new HelloReply();
+        reply.Message = "Hello " + request.Name;
+        foreach (var claim in claims)
         {
-            return Task.FromResult(new HelloReply { Message = "Hello " + request.Name });
+            reply.Claims.Add(claim.Type, claim.Value);
         }
+
+        return Task.FromResult(reply);
     }
 }

@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,12 +16,8 @@
 
 #endregion
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Sockets;
-using System.Threading;
-using System.Threading.Tasks;
 using Grpc.Core;
 using Grpc.Shared;
 using Grpc.Shared.Server;
@@ -29,515 +25,583 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 
-namespace Grpc.AspNetCore.Server.Internal
+namespace Grpc.AspNetCore.Server.Internal;
+
+[DebuggerDisplay("{DebuggerToString(),nq}")]
+[DebuggerTypeProxy(typeof(HttpContextServerCallContextDebugView))]
+internal sealed partial class HttpContextServerCallContext : ServerCallContext, IServerCallContextFeature
 {
-    internal sealed partial class HttpContextServerCallContext : ServerCallContext, IServerCallContextFeature
+    private static readonly AuthContext UnauthenticatedContext = new AuthContext(null, new Dictionary<string, List<AuthProperty>>());
+    private string? _peer;
+    private Metadata? _requestHeaders;
+    private Metadata? _responseTrailers;
+    private Status _status;
+    private AuthContext? _authContext;
+    private Activity? _activity;
+    // Internal for tests
+    internal ServerCallDeadlineManager? DeadlineManager;
+    private HttpContextSerializationContext? _serializationContext;
+    private DefaultDeserializationContext? _deserializationContext;
+
+    internal HttpContextServerCallContext(HttpContext httpContext, MethodOptions options, Type requestType, Type responseType, ILogger logger)
     {
-        private static readonly AuthContext UnauthenticatedContext = new AuthContext(null, new Dictionary<string, List<AuthProperty>>());
-        private string? _peer;
-        private Metadata? _requestHeaders;
-        private Metadata? _responseTrailers;
-        private Status _status;
-        private AuthContext? _authContext;
-        // Internal for tests
-        internal ServerCallDeadlineManager? DeadlineManager;
-        private HttpContextSerializationContext? _serializationContext;
-        private DefaultDeserializationContext? _deserializationContext;
+        HttpContext = httpContext;
+        Options = options;
+        RequestType = requestType;
+        ResponseType = responseType;
+        Logger = logger;
+    }
 
-        internal HttpContextServerCallContext(HttpContext httpContext, MethodOptions options, Type requestType, Type responseType, ILogger logger)
+    internal ILogger Logger { get; }
+    internal HttpContext HttpContext { get; }
+    internal MethodOptions Options { get; }
+    internal Type RequestType { get; }
+    internal Type ResponseType { get; }
+    internal string? ResponseGrpcEncoding { get; private set; }
+
+    internal HttpContextSerializationContext SerializationContext
+    {
+        get => _serializationContext ??= new HttpContextSerializationContext(this);
+    }
+    internal DefaultDeserializationContext DeserializationContext
+    {
+        get => _deserializationContext ??= new DefaultDeserializationContext();
+    }
+
+    internal bool HasResponseTrailers => _responseTrailers != null;
+
+    protected override string MethodCore => HttpContext.Request.Path.Value!;
+
+    protected override string HostCore => HttpContext.Request.Host.Value!;
+
+    protected override string PeerCore
+    {
+        get
         {
-            HttpContext = httpContext;
-            Options = options;
-            RequestType = requestType;
-            ResponseType = responseType;
-            Logger = logger;
+            // Follows the standard at https://github.com/grpc/grpc/blob/master/doc/naming.md
+            return _peer ??= BuildPeer();
         }
+    }
 
-        internal ILogger Logger { get; }
-        internal HttpContext HttpContext { get; }
-        internal MethodOptions Options { get; }
-        internal Type RequestType { get; }
-        internal Type ResponseType { get; }
-        internal string? ResponseGrpcEncoding { get; private set; }
-
-        internal HttpContextSerializationContext SerializationContext
+    private string BuildPeer()
+    {
+        var connection = HttpContext.Connection;
+        if (connection.RemoteIpAddress != null)
         {
-            get => _serializationContext ??= new HttpContextSerializationContext(this);
-        }
-        internal DefaultDeserializationContext DeserializationContext
-        {
-            get => _deserializationContext ??= new DefaultDeserializationContext();
-        }
-
-        internal bool HasResponseTrailers => _responseTrailers != null;
-
-        protected override string MethodCore => HttpContext.Request.Path.Value;
-
-        protected override string HostCore => HttpContext.Request.Host.Value;
-
-        protected override string? PeerCore
-        {
-            get
+            switch (connection.RemoteIpAddress.AddressFamily)
             {
-                if (_peer == null)
+                case AddressFamily.InterNetwork:
+                    return $"ipv4:{connection.RemoteIpAddress}:{connection.RemotePort}";
+                case AddressFamily.InterNetworkV6:
+                    return $"ipv6:[{connection.RemoteIpAddress}]:{connection.RemotePort}";
+                default:
+                    // TODO(JamesNK) - Test what should be output when used with UDS and named pipes
+                    return $"unknown:{connection.RemoteIpAddress}:{connection.RemotePort}";
+            }
+        }
+        else
+        {
+            return "unknown"; // Match Grpc.Core
+        }
+    }
+
+    protected override DateTime DeadlineCore => DeadlineManager?.Deadline ?? DateTime.MaxValue;
+
+    protected override Metadata RequestHeadersCore
+    {
+        get
+        {
+            if (_requestHeaders == null)
+            {
+                _requestHeaders = new Metadata();
+
+                foreach (var header in HttpContext.Request.Headers)
                 {
-                    var connection = HttpContext.Connection;
-                    if (connection.RemoteIpAddress != null)
+                    if (GrpcProtocolHelpers.ShouldSkipHeader(header.Key))
                     {
-                        _peer = (connection.RemoteIpAddress.AddressFamily == AddressFamily.InterNetwork ? "ipv4:" : "ipv6:") + connection.RemoteIpAddress + ":" + connection.RemotePort;
+                        continue;
+                    }
+
+                    if (header.Key.EndsWith(Metadata.BinaryHeaderSuffix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _requestHeaders.Add(header.Key, GrpcProtocolHelpers.ParseBinaryHeader(header.Value!));
+                    }
+                    else
+                    {
+                        _requestHeaders.Add(header.Key, header.Value!);
                     }
                 }
-
-                return _peer;
             }
+
+            return _requestHeaders;
+        }
+    }
+
+    internal Task ProcessHandlerErrorAsync(Exception ex, string method)
+    {
+        if (DeadlineManager == null)
+        {
+            ProcessHandlerError(ex, method);
+            return Task.CompletedTask;
         }
 
-        protected override DateTime DeadlineCore => DeadlineManager?.Deadline ?? DateTime.MaxValue;
+        // Could have a fast path for no deadline being raised when an error happens,
+        // but it isn't worth the complexity.
+        return ProcessHandlerErrorAsyncCore(ex, method);
+    }
 
-        protected override Metadata RequestHeadersCore
+    private async Task ProcessHandlerErrorAsyncCore(Exception ex, string method)
+    {
+        Debug.Assert(DeadlineManager != null, "Deadline manager should have been created.");
+
+        if (!DeadlineManager.TrySetCallComplete())
         {
-            get
-            {
-                if (_requestHeaders == null)
-                {
-                    _requestHeaders = new Metadata();
-
-                    foreach (var header in HttpContext.Request.Headers)
-                    {
-                        // gRPC metadata contains a subset of the request headers
-                        // Filter out pseudo headers (start with :) and other known headers
-                        if (header.Key.StartsWith(':') || GrpcProtocolConstants.FilteredHeaders.Contains(header.Key))
-                        {
-                            continue;
-                        }
-                        else if (header.Key.EndsWith(Metadata.BinaryHeaderSuffix, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _requestHeaders.Add(header.Key, GrpcProtocolHelpers.ParseBinaryHeader(header.Value));
-                        }
-                        else
-                        {
-                            _requestHeaders.Add(header.Key, header.Value);
-                        }
-                    }
-                }
-
-                return _requestHeaders;
-            }
+            await DeadlineManager.WaitDeadlineCompleteAsync();
         }
 
-        internal Task ProcessHandlerErrorAsync(Exception ex, string method)
+        try
         {
-            if (DeadlineManager == null)
-            {
-                ProcessHandlerError(ex, method);
-                return Task.CompletedTask;
-            }
-
-            return ProcessHandlerErrorAsyncCore(ex, method);
+            ProcessHandlerError(ex, method);
         }
-
-        private async Task ProcessHandlerErrorAsyncCore(Exception ex, string method)
+        finally
         {
-            Debug.Assert(DeadlineManager != null, "Deadline manager should have been created.");
-
-            await DeadlineManager.Lock.WaitAsync();
-
-            try
-            {
-                ProcessHandlerError(ex, method);
-            }
-            finally
-            {
-                DeadlineManager.Lock.Release();
-                await DeadlineManager.DisposeAsync();
-            }
+            await DeadlineManager.DisposeAsync();
+            GrpcServerLog.DeadlineStopped(Logger);
         }
+    }
 
-        private void ProcessHandlerError(Exception ex, string method)
+    private void ProcessHandlerError(Exception ex, string method)
+    {
+        if (ex is RpcException rpcException)
         {
-            if (ex is RpcException rpcException)
+            // RpcException is thrown by client code to modify the status returned from the server.
+            // Log the status, detail and debug exception (if present).
+            // Don't log the RpcException itself to reduce log verbosity. All of its information is already captured.
+            GrpcServerLog.RpcConnectionError(Logger, rpcException.StatusCode, rpcException.Status.Detail, rpcException.Status.DebugException);
+
+            // There are two sources of metadata entries on the server-side:
+            // 1. serverCallContext.ResponseTrailers
+            // 2. trailers in RpcException thrown by user code in server side handler.
+            // As metadata allows duplicate keys, the logical thing to do is
+            // to just merge trailers from RpcException into serverCallContext.ResponseTrailers.
+            foreach (var entry in rpcException.Trailers)
             {
-                GrpcServerLog.RpcConnectionError(Logger, rpcException.StatusCode, ex);
+                ResponseTrailers.Add(entry);
+            }
 
-                // There are two sources of metadata entries on the server-side:
-                // 1. serverCallContext.ResponseTrailers
-                // 2. trailers in RpcException thrown by user code in server side handler.
-                // As metadata allows duplicate keys, the logical thing to do is
-                // to just merge trailers from RpcException into serverCallContext.ResponseTrailers.
-                foreach (var entry in rpcException.Trailers)
-                {
-                    ResponseTrailers.Add(entry);
-                }
-
-                _status = rpcException.Status;
+            _status = rpcException.Status;
+        }
+        else
+        {
+            if (ex is OperationCanceledException or IOException && CancellationTokenCore.IsCancellationRequested)
+            {
+                // Request cancellation can cause OCE and IOException.
+                // When the request has been canceled log these error types at the info-level to avoid creating error-level noise.
+                GrpcServerLog.ServiceMethodCanceled(Logger, method, ex);
             }
             else
             {
                 GrpcServerLog.ErrorExecutingServiceMethod(Logger, method, ex);
-
-                var message = ErrorMessageHelper.BuildErrorMessage("Exception was thrown by handler.", ex, Options.EnableDetailedErrors);
-                _status = new Status(StatusCode.Unknown, message);
             }
 
-            // Don't update trailers if request has exceeded deadline/aborted
-            if (!CancellationToken.IsCancellationRequested)
-            {
-                HttpContext.Response.ConsolidateTrailers(this);
-            }
+            var message = ErrorMessageHelper.BuildErrorMessage("Exception was thrown by handler.", ex, Options.EnableDetailedErrors);
 
-            LogCallEnd();
-
-            DeadlineManager?.SetCallComplete();
+            // Note that the exception given to status won't be returned to the client.
+            // It is still useful to set in case an interceptor accesses the status on the server.
+            _status = new Status(StatusCode.Unknown, message, ex);
         }
 
-        // If there is a deadline then we need to have our own cancellation token.
-        // Deadline will call CompleteAsync, then Reset/Abort. This order means RequestAborted
-        // is not raised, so deadlineCts will be triggered instead.
-        protected override CancellationToken CancellationTokenCore => DeadlineManager?.CancellationToken ?? HttpContext.RequestAborted;
-
-        protected override Metadata ResponseTrailersCore
+        // Don't update trailers if request has exceeded deadline
+        if (DeadlineManager == null || !DeadlineManager.IsDeadlineExceededStarted)
         {
-            get
-            {
-                if (_responseTrailers == null)
-                {
-                    _responseTrailers = new Metadata();
-                }
-
-                return _responseTrailers;
-            }
+            HttpContext.Response.ConsolidateTrailers(this);
         }
 
-        protected override Status StatusCore
+        DeadlineManager?.SetCallEnded();
+
+        LogCallEnd();
+    }
+
+    // If there is a deadline then we need to have our own cancellation token.
+    // Deadline will call CompleteAsync, then Reset/Abort. This order means RequestAborted
+    // is not raised, so deadlineCts will be triggered instead.
+    protected override CancellationToken CancellationTokenCore => DeadlineManager?.CancellationToken ?? HttpContext.RequestAborted;
+
+    protected override Metadata ResponseTrailersCore
+    {
+        get
         {
-            get => _status;
-            set => _status = value;
+            if (_responseTrailers == null)
+            {
+                _responseTrailers = new Metadata();
+            }
+
+            return _responseTrailers;
+        }
+    }
+
+    protected override Status StatusCore
+    {
+        get => _status;
+        set => _status = value;
+    }
+
+    internal Task EndCallAsync()
+    {
+        if (DeadlineManager == null)
+        {
+            EndCallCore();
+            return Task.CompletedTask;
+        }
+        else if (DeadlineManager.TrySetCallComplete())
+        {
+            // Fast path when deadline hasn't been raised.
+            EndCallCore();
+            GrpcServerLog.DeadlineStopped(Logger);
+            return DeadlineManager.DisposeAsync().AsTask();
         }
 
-        internal Task EndCallAsync()
+        // Deadline is exceeded
+        return EndCallAsyncCore();
+    }
+
+    private async Task EndCallAsyncCore()
+    {
+        Debug.Assert(DeadlineManager != null, "Deadline manager should have been created.");
+
+        try
         {
-            if (DeadlineManager == null)
-            {
-                EndCallCore();
-                return Task.CompletedTask;
-            }
+            // Deadline has started
+            await DeadlineManager.WaitDeadlineCompleteAsync();
 
-            var lockTask = DeadlineManager.Lock.WaitAsync();
-            if (lockTask.IsCompletedSuccessfully)
-            {
-                Task disposeTask;
-                try
-                {
-                    EndCallCore();
-                }
-                finally
-                {
-                    DeadlineManager.Lock.Release();
+            EndCallCore();
+            DeadlineManager.SetCallEnded();
+            GrpcServerLog.DeadlineStopped(Logger);
+        }
+        finally
+        {
+            await DeadlineManager.DisposeAsync();
+        }
+    }
 
-                    // Can't return from a finally
-                    disposeTask = DeadlineManager.DisposeAsync().AsTask();
-                }
-
-                return disposeTask;
-            }
-            else
-            {
-                return EndCallAsyncCore(lockTask);
-            }
+    private void EndCallCore()
+    {
+        // Don't update trailers if request has exceeded deadline
+        if (DeadlineManager == null || !DeadlineManager.IsDeadlineExceededStarted)
+        {
+            HttpContext.Response.ConsolidateTrailers(this);
         }
 
-        private async Task EndCallAsyncCore(Task lockTask)
+        LogCallEnd();
+    }
+
+    private void LogCallEnd()
+    {
+        _activity?.AddTag(GrpcServerConstants.ActivityStatusCodeTag, _status.StatusCode.ToTrailerString());
+        if (_status.StatusCode != StatusCode.OK)
         {
-            Debug.Assert(DeadlineManager != null, "Deadline manager should have been created.");
-
-            await lockTask;
-
-            try
-            {
-                EndCallCore();
-            }
-            finally
-            {
-                DeadlineManager.Lock.Release();
-                await DeadlineManager.DisposeAsync();
-            }
-        }
-
-        private void EndCallCore()
-        {
-            // Don't set trailers if deadline exceeded or request aborted
-            if (!CancellationToken.IsCancellationRequested)
-            {
-                HttpContext.Response.ConsolidateTrailers(this);
-            }
-
-            LogCallEnd();
-
-            DeadlineManager?.SetCallComplete();
-        }
-
-        private void LogCallEnd()
-        {
-            var activity = GetHostActivity();
-            if (activity != null)
-            {
-                activity.AddTag(GrpcServerConstants.ActivityStatusCodeTag, _status.StatusCode.ToTrailerString());
-            }
-            if (_status.StatusCode != StatusCode.OK)
+            if (GrpcEventSource.Log.IsEnabled())
             {
                 GrpcEventSource.Log.CallFailed(_status.StatusCode);
             }
+        }
+        if (GrpcEventSource.Log.IsEnabled())
+        {
             GrpcEventSource.Log.CallStop();
         }
+    }
 
-        protected override WriteOptions? WriteOptionsCore { get; set; }
+    protected override WriteOptions? WriteOptionsCore { get; set; }
 
-        protected override AuthContext AuthContextCore
+    protected override AuthContext AuthContextCore
+    {
+        get
         {
-            get
+            if (_authContext == null)
             {
-                if (_authContext == null)
+                var clientCertificate = HttpContext.Connection.ClientCertificate;
+                if (clientCertificate == null)
                 {
-                    var clientCertificate = HttpContext.Connection.ClientCertificate;
-                    if (clientCertificate == null)
-                    {
-                        _authContext = UnauthenticatedContext;
-                    }
-                    else
-                    {
-                        _authContext = GrpcProtocolHelpers.CreateAuthContext(clientCertificate);
-                    }
-                }
-
-                return _authContext;
-            }
-        }
-
-        public ServerCallContext ServerCallContext => this;
-
-        protected override IDictionary<object, object> UserStateCore => HttpContext.Items;
-
-        internal bool HasBufferedMessage { get; set; }
-
-        protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions options)
-        {
-            // TODO(JunTaoLuo, JamesNK): Currently blocked on ContextPropagationToken implementation in Grpc.Core.Api
-            // https://github.com/grpc/grpc-dotnet/issues/40
-            throw new NotImplementedException("CreatePropagationToken will be implemented in a future version.");
-        }
-
-        protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders)
-        {
-            // Headers can only be written once. Throw on subsequent call to write response header instead of silent no-op.
-            if (HttpContext.Response.HasStarted)
-            {
-                throw new InvalidOperationException("Response headers can only be sent once per call.");
-            }
-
-            if (responseHeaders != null)
-            {
-                foreach (var entry in responseHeaders)
-                {
-                    if (entry.Key == GrpcProtocolConstants.CompressionRequestAlgorithmHeader)
-                    {
-                        // grpc-internal-encoding-request is used in the server to set message compression
-                        // on a per-call bassis.
-                        // 'grpc-encoding' is sent even if WriteOptions.Flags = NoCompress. In that situation
-                        // individual messages will not be written with compression.
-                        ResponseGrpcEncoding = entry.Value;
-                        HttpContext.Response.Headers[GrpcProtocolConstants.MessageEncodingHeader] = ResponseGrpcEncoding;
-                    }
-                    else
-                    {
-                        if (entry.IsBinary)
-                        {
-                            HttpContext.Response.Headers[entry.Key] = Convert.ToBase64String(entry.ValueBytes);
-                        }
-                        else
-                        {
-                            HttpContext.Response.Headers[entry.Key] = entry.Value;
-                        }
-                    }
-                }
-            }
-
-            return HttpContext.Response.BodyWriter.FlushAsync().GetAsTask();
-        }
-
-        // Clock is for testing
-        public void Initialize(ISystemClock? clock = null)
-        {
-            var activity = GetHostActivity();
-            if (activity != null)
-            {
-                activity.AddTag(GrpcServerConstants.ActivityMethodTag, MethodCore);
-            }
-
-            GrpcEventSource.Log.CallStart(MethodCore);
-
-            var timeout = GetTimeout();
-
-            if (timeout != TimeSpan.Zero)
-            {
-                DeadlineManager = new ServerCallDeadlineManager(clock ?? SystemClock.Instance, timeout, DeadlineExceededAsync, HttpContext.RequestAborted);
-            }
-
-            var serviceDefaultCompression = Options.ResponseCompressionAlgorithm;
-            if (serviceDefaultCompression != null &&
-                !string.Equals(serviceDefaultCompression, GrpcProtocolConstants.IdentityGrpcEncoding, StringComparison.Ordinal) &&
-                IsEncodingInRequestAcceptEncoding(serviceDefaultCompression))
-            {
-                ResponseGrpcEncoding = serviceDefaultCompression;
-            }
-            else
-            {
-                ResponseGrpcEncoding = GrpcProtocolConstants.IdentityGrpcEncoding;
-            }
-
-            HttpContext.Response.Headers.Append(GrpcProtocolConstants.MessageEncodingHeader, ResponseGrpcEncoding);
-        }
-
-        private Activity? GetHostActivity()
-        {
-            var activity = Activity.Current;
-            while (activity != null)
-            {
-                // We only want to add gRPC metadata to the host activity
-                // Search parent activities in case a new activity was started in middleware before gRPC endpoint is invoked
-                if (string.Equals(activity.OperationName, GrpcServerConstants.HostActivityName, StringComparison.Ordinal))
-                {
-                    return activity;
-                }
-
-                activity = activity.Parent;
-            }
-
-            return null;
-        }
-
-        private TimeSpan GetTimeout()
-        {
-            if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.TimeoutHeader, out var values))
-            {
-                // CancellationTokenSource does not support greater than int.MaxValue milliseconds
-                if (GrpcProtocolHelpers.TryDecodeTimeout(values, out var timeout) &&
-                    timeout > TimeSpan.Zero &&
-                    timeout.TotalMilliseconds <= int.MaxValue)
-                {
-                    return timeout;
-                }
-
-                GrpcServerLog.InvalidTimeoutIgnored(Logger, values);
-            }
-
-            return TimeSpan.Zero;
-        }
-
-        private async Task DeadlineExceededAsync()
-        {
-            try
-            {
-                GrpcServerLog.DeadlineExceeded(Logger, GetTimeout());
-                GrpcEventSource.Log.CallDeadlineExceeded();
-
-                var status = new Status(StatusCode.DeadlineExceeded, "Deadline Exceeded");
-
-                var trailersDestination = GrpcProtocolHelpers.GetTrailersDestination(HttpContext.Response);
-                GrpcProtocolHelpers.SetStatus(trailersDestination, status);
-
-                _status = status;
-
-                // Immediately send remaining response content and trailers
-                // If feature is null then reset/abort will still end request, but response won't have trailers
-                var completionFeature = HttpContext.Features.Get<IHttpResponseBodyFeature>();
-                if (completionFeature != null)
-                {
-                    await completionFeature.CompleteAsync();
-                }
-
-                // HttpResetFeature should always be set on context,
-                // but in case it isn't, fall back to HttpContext.Abort.
-                // Abort will send error code INTERNAL_ERROR instead of NO_ERROR.
-                var resetFeature = HttpContext.Features.Get<IHttpResetFeature>();
-                if (resetFeature != null)
-                {
-                    GrpcServerLog.ResettingResponse(Logger, GrpcProtocolConstants.ResetStreamNoError);
-                    resetFeature.Reset(GrpcProtocolConstants.ResetStreamNoError);
+                    _authContext = UnauthenticatedContext;
                 }
                 else
                 {
-                    // Note that some clients will fail with error code INTERNAL_ERROR.
-                    GrpcServerLog.AbortingResponse(Logger);
-                    HttpContext.Abort();
+                    _authContext = GrpcProtocolHelpers.CreateAuthContext(clientCertificate);
                 }
             }
-            catch (Exception ex)
-            {
-                GrpcServerLog.DeadlineCancellationError(Logger, ex);
-            }
+
+            return _authContext;
+        }
+    }
+
+    public ServerCallContext ServerCallContext => this;
+
+    protected override IDictionary<object, object> UserStateCore => HttpContext.Items!;
+
+    protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions? options)
+    {
+        // TODO(JunTaoLuo, JamesNK): Currently blocked on ContextPropagationToken implementation in Grpc.Core.Api
+        // https://github.com/grpc/grpc-dotnet/issues/40
+        throw new NotImplementedException("CreatePropagationToken will be implemented in a future version.");
+    }
+
+    protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(responseHeaders);
+
+        // Headers can only be written once. Throw on subsequent call to write response header instead of silent no-op.
+        if (HttpContext.Response.HasStarted)
+        {
+            throw new InvalidOperationException("Response headers can only be sent once per call.");
         }
 
-        internal string? GetRequestGrpcEncoding()
+        foreach (var header in responseHeaders)
         {
-            if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.MessageEncodingHeader, out var values))
+            if (header.Key == GrpcProtocolConstants.CompressionRequestAlgorithmHeader)
             {
-                return values;
+                // grpc-internal-encoding-request is used in the server to set message compression
+                // on a per-call bassis.
+                // 'grpc-encoding' is sent even if WriteOptions.Flags = NoCompress. In that situation
+                // individual messages will not be written with compression.
+                ResponseGrpcEncoding = header.Value;
+                HttpContext.Response.Headers[GrpcProtocolConstants.MessageEncodingHeader] = ResponseGrpcEncoding;
             }
-
-            return null;
-        }
-
-        internal bool IsEncodingInRequestAcceptEncoding(string encoding)
-        {
-            if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.MessageAcceptEncodingHeader, out var values))
+            else
             {
-                var acceptEncoding = values.ToString().AsSpan();
-
-                while (true)
+                var encodedValue = header.IsBinary ? Convert.ToBase64String(header.ValueBytes) : header.Value;
+                try
                 {
-                    var separatorIndex = acceptEncoding.IndexOf(',');
+                    HttpContext.Response.Headers.Append(header.Key, encodedValue);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Error adding response header '{header.Key}'.", ex);
+                }
+            }
+        }
 
-                    ReadOnlySpan<char> segment;
-                    if (separatorIndex != -1)
-                    {
-                        segment = acceptEncoding.Slice(0, separatorIndex);
-                        acceptEncoding = acceptEncoding.Slice(separatorIndex + 1);
-                    }
-                    else
-                    {
-                        segment = acceptEncoding;
-                    }
+        return HttpContext.Response.BodyWriter.FlushAsync().GetAsTask();
+    }
 
-                    // Check segment
-                    if (segment.SequenceEqual(encoding))
-                    {
-                        return true;
-                    }
+    // Clock is for testing
+    public void Initialize(ISystemClock? clock = null)
+    {
+        _activity = GetHostActivity();
+        _activity?.AddTag(GrpcServerConstants.ActivityMethodTag, MethodCore);
 
-                    if (separatorIndex == -1)
-                    {
-                        break;
-                    }
+        if (GrpcEventSource.Log.IsEnabled())
+        {
+            GrpcEventSource.Log.CallStart(MethodCore);
+        }
+
+        var timeout = GetTimeout();
+
+        if (timeout != TimeSpan.Zero)
+        {
+            DeadlineManager = new ServerCallDeadlineManager(this, clock ?? SystemClock.Instance, timeout);
+            GrpcServerLog.DeadlineStarted(Logger, timeout);
+        }
+
+        var serviceDefaultCompression = Options.ResponseCompressionAlgorithm;
+        if (serviceDefaultCompression != null &&
+            !GrpcProtocolConstants.IsGrpcEncodingIdentity(serviceDefaultCompression) &&
+            IsEncodingInRequestAcceptEncoding(serviceDefaultCompression))
+        {
+            ResponseGrpcEncoding = serviceDefaultCompression;
+        }
+
+        // grpc-encoding response header is optional and is inferred as 'identity' when not present.
+        // Only write a non-identity value for performance.
+        if (ResponseGrpcEncoding != null)
+        {
+            HttpContext.Response.Headers[GrpcProtocolConstants.MessageEncodingHeader] = ResponseGrpcEncoding;
+        }
+    }
+
+    private Activity? GetHostActivity()
+    {
+        // Feature always returns the host activity
+        var feature = HttpContext.Features.Get<IHttpActivityFeature>();
+        if (feature != null)
+        {
+            return feature.Activity;
+        }
+
+        // If feature isn't available, or not supported, then fallback to Activity.Current.
+        var activity = Activity.Current;
+        while (activity != null)
+        {
+            // We only want to add gRPC metadata to the host activity
+            // Search parent activities in case a new activity was started in middleware before gRPC endpoint is invoked
+            if (string.Equals(activity.OperationName, GrpcServerConstants.HostActivityName, StringComparison.Ordinal))
+            {
+                return activity;
+            }
+
+            activity = activity.Parent;
+        }
+
+        return null;
+    }
+
+    private TimeSpan GetTimeout()
+    {
+        if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.TimeoutHeader, out var values))
+        {
+            if (GrpcProtocolHelpers.TryDecodeTimeout(values, out var timeout) &&
+                timeout > TimeSpan.Zero)
+            {
+                if (timeout.Ticks > GrpcProtocolConstants.MaxDeadlineTicks)
+                {
+                    GrpcServerLog.DeadlineTimeoutTooLong(Logger, timeout);
+
+                    timeout = TimeSpan.FromTicks(GrpcProtocolConstants.MaxDeadlineTicks);
                 }
 
-                // Check remainder
-                if (acceptEncoding.SequenceEqual(encoding))
+                return timeout;
+            }
+
+            GrpcServerLog.InvalidTimeoutIgnored(Logger, values!);
+        }
+
+        return TimeSpan.Zero;
+    }
+
+    internal async Task DeadlineExceededAsync()
+    {
+        GrpcServerLog.DeadlineExceeded(Logger, GetTimeout());
+        if (GrpcEventSource.Log.IsEnabled())
+        {
+            GrpcEventSource.Log.CallDeadlineExceeded();
+        }
+
+        var status = new Status(StatusCode.DeadlineExceeded, "Deadline Exceeded");
+
+        var trailersDestination = GrpcProtocolHelpers.GetTrailersDestination(HttpContext.Response);
+        GrpcProtocolHelpers.SetStatus(trailersDestination, status);
+
+        _status = status;
+
+        // Immediately send remaining response content and trailers
+        // If feature is null then reset/abort will still end request, but response won't have trailers
+        var completionFeature = HttpContext.Features.Get<IHttpResponseBodyFeature>();
+        if (completionFeature != null)
+        {
+            await completionFeature.CompleteAsync();
+        }
+
+        CancelRequest();
+    }
+
+    internal void CancelRequest()
+    {
+        // HttpResetFeature should always be set on context,
+        // but in case it isn't, fall back to HttpContext.Abort.
+        // Abort will send error code INTERNAL_ERROR.
+        var resetFeature = HttpContext.Features.Get<IHttpResetFeature>();
+        if (resetFeature != null)
+        {
+            var errorCode = GrpcProtocolConstants.GetCancelErrorCode(HttpContext.Request.Protocol);
+
+            GrpcServerLog.ResettingResponse(Logger, errorCode);
+            resetFeature.Reset(errorCode);
+        }
+        else
+        {
+            // Note that some clients will fail with error code INTERNAL_ERROR.
+            GrpcServerLog.AbortingResponse(Logger);
+            HttpContext.Abort();
+        }
+    }
+
+    internal string? GetRequestGrpcEncoding()
+    {
+        if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.MessageEncodingHeader, out var values))
+        {
+            return values;
+        }
+
+        return null;
+    }
+
+    internal bool IsEncodingInRequestAcceptEncoding(string encoding)
+    {
+        if (HttpContext.Request.Headers.TryGetValue(GrpcProtocolConstants.MessageAcceptEncodingHeader, out var values))
+        {
+            var acceptEncoding = values.ToString().AsSpan();
+
+            while (true)
+            {
+                var separatorIndex = acceptEncoding.IndexOf(',');
+
+                ReadOnlySpan<char> segment;
+                if (separatorIndex != -1)
+                {
+                    segment = acceptEncoding.Slice(0, separatorIndex);
+                    acceptEncoding = acceptEncoding.Slice(separatorIndex + 1);
+                }
+                else
+                {
+                    segment = acceptEncoding;
+                }
+
+                segment = segment.Trim();
+
+                // Check segment
+                if (segment.SequenceEqual(encoding))
                 {
                     return true;
                 }
+
+                if (separatorIndex == -1)
+                {
+                    break;
+                }
             }
 
-            return false;
-        }
-
-        internal void ValidateAcceptEncodingContainsResponseEncoding()
-        {
-            Debug.Assert(ResponseGrpcEncoding != null);
-
-            if (!IsEncodingInRequestAcceptEncoding(ResponseGrpcEncoding))
+            // Check remainder
+            if (acceptEncoding.SequenceEqual(encoding))
             {
-                GrpcServerLog.EncodingNotInAcceptEncoding(Logger, ResponseGrpcEncoding);
+                return true;
             }
         }
+
+        return false;
+    }
+
+    internal void ValidateAcceptEncodingContainsResponseEncoding()
+    {
+        var resolvedResponseGrpcEncoding = ResponseGrpcEncoding ?? GrpcProtocolConstants.IdentityGrpcEncoding;
+
+        if (!IsEncodingInRequestAcceptEncoding(resolvedResponseGrpcEncoding))
+        {
+            GrpcServerLog.EncodingNotInAcceptEncoding(Logger, resolvedResponseGrpcEncoding);
+        }
+    }
+
+    private string DebuggerToString() => $"Method = {Method}";
+
+    private sealed class HttpContextServerCallContextDebugView
+    {
+        private readonly HttpContextServerCallContext _context;
+
+        public HttpContextServerCallContextDebugView(HttpContextServerCallContext context)
+        {
+            _context = context;
+        }
+
+        public AuthContext AuthContext => _context.AuthContext;
+        public CancellationToken CancellationToken => _context.CancellationToken;
+        public DateTime Deadline => _context.Deadline;
+        public string Host => _context.Host;
+        public string Method => _context.Method;
+        public string Peer => _context.Peer;
+        public Metadata RequestHeaders => _context.RequestHeaders;
+        public Metadata ResponseTrailers => _context.ResponseTrailers;
+        public Status Status => _context.Status;
+        public IDictionary<object, object> UserState => _context.UserState;
+        public WriteOptions? WriteOptions => _context.WriteOptions;
+
+        public HttpContext HttpContext => _context.HttpContext;
     }
 }

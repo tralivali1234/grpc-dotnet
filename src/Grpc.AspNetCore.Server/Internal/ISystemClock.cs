@@ -16,12 +16,10 @@
 
 #endregion
 
-using System;
 
-namespace Grpc.AspNetCore.Server.Internal
+namespace Grpc.AspNetCore.Server.Internal;
+
+internal interface ISystemClock
 {
-    internal interface ISystemClock
-    {
-        DateTime UtcNow { get; }
-    }
+    DateTime UtcNow { get; }
 }

@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,35 +16,37 @@
 
 #endregion
 
-using System;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
+namespace Grpc.Tests.Shared;
 
-namespace Grpc.Tests.Shared
+public class TestHttpMessageHandler : HttpMessageHandler
 {
-    public class TestHttpMessageHandler : DelegatingHandler
+    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _sendAsync;
+
+    public TestHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> sendAsync)
     {
-        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _sendAsync;
+        _sendAsync = sendAsync;
+    }
 
-        public TestHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> sendAsync)
-        {
-            _sendAsync = sendAsync;
-        }
+    public static TestHttpMessageHandler Create(Func<HttpRequestMessage, Task<HttpResponseMessage>> sendAsync)
+    {
+        var tcs = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public static TestHttpMessageHandler Create(Func<HttpRequestMessage, Task<HttpResponseMessage>> sendAsync)
+        return new TestHttpMessageHandler(async (request, cancellationToken) =>
         {
-            return new TestHttpMessageHandler((request, cancellationToken) => sendAsync(request));
-        }
+            using var registration = cancellationToken.Register(() => tcs.TrySetCanceled());
 
-        public static TestHttpMessageHandler Create(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> sendAsync)
-        {
-            return new TestHttpMessageHandler(sendAsync);
-        }
+            var result = await Task.WhenAny(sendAsync(request), tcs.Task);
+            return await result;
+        });
+    }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            return _sendAsync(request, cancellationToken);
-        }
+    public static TestHttpMessageHandler Create(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> sendAsync)
+    {
+        return new TestHttpMessageHandler(sendAsync);
+    }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        return _sendAsync(request, cancellationToken);
     }
 }

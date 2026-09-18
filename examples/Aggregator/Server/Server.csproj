@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>
@@ -9,12 +9,13 @@
     <Protobuf Include="..\Proto\greet.proto" GrpcServices="Both" Link="Protos\greet.proto" />
     <Protobuf Include="..\Proto\count.proto" GrpcServices="Both" Link="Protos\count.proto" />
 
-    <PackageReference Include="Grpc.AspNetCore" Version="$(GrpcDotNetPackageVersion)" />
+    <PackageReference Include="Grpc.AspNetCore" />
 
-    <PackageReference Include="OpenTelemetry.Hosting" Version="$(OpenTelemetryPackageVersion)" />
-    <PackageReference Include="OpenTelemetry.Exporter.Zipkin" Version="$(OpenTelemetryPackageVersion)" />
-    <PackageReference Include="OpenTelemetry.Collector.Dependencies" Version="$(OpenTelemetryPackageVersion)" />
-    <PackageReference Include="OpenTelemetry.Collector.AspNetCore" Version="$(OpenTelemetryPackageVersion)" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.GrpcNetClient" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
   </ItemGroup>
 
 </Project>

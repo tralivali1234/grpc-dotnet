@@ -16,23 +16,59 @@
 
 #endregion
 
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Hosting;
+using Count;
+using Greet;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Server;
 
-namespace Server
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddGrpc();
+builder.Services.AddSingleton<IncrementingCounter>();
+
+if (bool.TryParse(builder.Configuration["EnableOpenTelemetry"], out var enableOpenTelemetry) && enableOpenTelemetry)
 {
-    public class Program
-    {
-        public static void Main(string[] args)
+    builder.Services.AddOpenTelemetry()
+        .WithTracing(tracing =>
         {
-            CreateHostBuilder(args).Build().Run();
-        }
+            tracing.SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("aggregator"));
 
-        public static IHostBuilder CreateHostBuilder(string[] args) =>
-            Host.CreateDefaultBuilder(args)
-                .ConfigureWebHostDefaults(webBuilder =>
-                {
-                    webBuilder.UseStartup<Startup>();
-                });
+            if (builder.Environment.IsDevelopment())
+            {
+                // We want to view all traces in development
+                tracing.SetSampler(new AlwaysOnSampler());
+            }
+
+            tracing.AddAspNetCoreInstrumentation()
+                   .AddGrpcClientInstrumentation()
+                   .AddHttpClientInstrumentation();
+
+            tracing.AddOtlpExporter();
+        });
+}
+
+// These clients will call back to the server
+builder.Services
+    .AddGrpcClient<Greeter.GreeterClient>((s, o) => { o.Address = GetCurrentAddress(s); })
+    .EnableCallContextPropagation();
+builder.Services
+    .AddGrpcClient<Counter.CounterClient>((s, o) => { o.Address = GetCurrentAddress(s); })
+    .EnableCallContextPropagation();
+
+var app = builder.Build();
+app.MapGrpcService<GreeterService>();
+app.MapGrpcService<CounterService>();
+app.MapGrpcService<AggregatorService>();
+app.Run();
+
+static Uri GetCurrentAddress(IServiceProvider serviceProvider)
+{
+    // Get the address of the current server from the request
+    var context = serviceProvider.GetRequiredService<IHttpContextAccessor>()?.HttpContext;
+    if (context == null)
+    {
+        throw new InvalidOperationException("Could not get HttpContext.");
     }
+
+    return new Uri($"{context.Request.Scheme}://{context.Request.Host.Value}");
 }

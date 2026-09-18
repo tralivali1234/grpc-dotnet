@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,13 +16,14 @@
 
 #endregion
 
-namespace Grpc.AspNetCore.Web.Internal
+using Microsoft.AspNetCore.Http;
+
+namespace Grpc.AspNetCore.Web.Internal;
+
+internal static class GrpcWebProtocolConstants
 {
-    internal static class GrpcWebProtocolConstants
-    {
-        internal const string GrpcContentType = "application/grpc";
-        internal const string GrpcWebContentType = "application/grpc-web";
-        internal const string GrpcWebTextContentType = "application/grpc-web-text";
-        internal const string Http2Protocol = "HTTP/2";
-    }
+    internal const string GrpcContentType = "application/grpc";
+    internal const string GrpcWebContentType = "application/grpc-web";
+    internal const string GrpcWebTextContentType = "application/grpc-web-text";
+    internal static readonly string Http2Protocol = HttpProtocol.Http2;
 }

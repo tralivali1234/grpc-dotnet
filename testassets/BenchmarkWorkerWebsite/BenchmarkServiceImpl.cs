@@ -16,38 +16,36 @@
 
 #endregion
 
-using System.Threading.Tasks;
-using BenchmarkWorkerWebsite;
 using Google.Protobuf;
 using Grpc.Core;
+using Grpc.Shared.TestAssets;
 
-namespace Grpc.Testing
+namespace Grpc.Testing;
+
+// Implementation copied from https://github.com/grpc/grpc/blob/master/src/csharp/Grpc.IntegrationTesting/BenchmarkServiceImpl.cs
+public class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
 {
-    // Implementation copied from https://github.com/grpc/grpc/blob/master/src/csharp/Grpc.IntegrationTesting/BenchmarkServiceImpl.cs
-    public class BenchmarkServiceImpl : BenchmarkService.BenchmarkServiceBase
+    public BenchmarkServiceImpl()
     {
-        public BenchmarkServiceImpl()
-        {
-        }
+    }
 
-        public override Task<SimpleResponse> UnaryCall(SimpleRequest request, ServerCallContext context)
+    public override Task<SimpleResponse> UnaryCall(SimpleRequest request, ServerCallContext context)
+    {
+        var response = new SimpleResponse { Payload = CreateZerosPayload(request.ResponseSize) };
+        return Task.FromResult(response);
+    }
+
+    public override async Task StreamingCall(IAsyncStreamReader<SimpleRequest> requestStream, IServerStreamWriter<SimpleResponse> responseStream, ServerCallContext context)
+    {
+        await requestStream.ForEachAsync(async request =>
         {
             var response = new SimpleResponse { Payload = CreateZerosPayload(request.ResponseSize) };
-            return Task.FromResult(response);
-        }
+            await responseStream.WriteAsync(response);
+        });
+    }
 
-        public override async Task StreamingCall(IAsyncStreamReader<SimpleRequest> requestStream, IServerStreamWriter<SimpleResponse> responseStream, ServerCallContext context)
-        {
-            await requestStream.ForEachAsync(async request =>
-            {
-                var response = new SimpleResponse { Payload = CreateZerosPayload(request.ResponseSize) };
-                await responseStream.WriteAsync(response);
-            });
-        }
-
-        private static Payload CreateZerosPayload(int size)
-        {
-            return new Payload { Body = ByteString.CopyFrom(new byte[size]) };
-        }
+    private static Payload CreateZerosPayload(int size)
+    {
+        return new Payload { Body = UnsafeByteOperations.UnsafeWrap(new byte[size]) };
     }
 }

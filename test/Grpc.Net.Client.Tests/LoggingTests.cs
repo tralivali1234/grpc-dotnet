@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,11 +16,7 @@
 
 #endregion
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Net;
-using System.Threading.Tasks;
 using Greet;
 using Grpc.Core;
 using Grpc.Net.Client.Tests.Infrastructure;
@@ -28,59 +24,156 @@ using Grpc.Tests.Shared;
 using Microsoft.Extensions.Logging.Testing;
 using NUnit.Framework;
 
-namespace Grpc.Net.Client.Tests
+namespace Grpc.Net.Client.Tests;
+
+[TestFixture]
+public class LoggingTests
 {
-    [TestFixture]
-    public class LoggingTests
+    [Test]
+    public async Task AsyncUnaryCall_Success_LogToFactory()
     {
-        [Test]
-        public async Task AsyncUnaryCall_Success_LogToFactory()
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
+            // Trigger request stream serialization
+            await request.Content!.ReadAsStreamAsync().DefaultTimeout();
+
+            var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply
             {
-                // Trigger request stream serialization
-                await request.Content.ReadAsStreamAsync().DefaultTimeout();
+                Message = "Hello world"
+            }).DefaultTimeout();
 
-                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply
-                {
-                    Message = "Hello world"
-                }).DefaultTimeout();
+            return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+        });
 
-                return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+        var testSink = new TestSink();
+        var loggerFactory = new TestLoggerFactory(testSink, true);
+
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, loggerFactory);
+
+        // Act
+        var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+
+        // Assert
+        Assert.AreEqual("Hello world", rs.Message);
+
+        var log = testSink.Writes.Single(w => w.EventId.Name == "StartingCall");
+        Assert.AreEqual("Starting gRPC call. Method type: 'Unary', URI: 'https://localhost/ServiceName/MethodName'.", log.State.ToString());
+        AssertScope(log);
+
+        log = testSink.Writes.Single(w => w.EventId.Name == "SendingMessage");
+        Assert.AreEqual("Sending message.", log.State.ToString());
+        AssertScope(log);
+
+        log = testSink.Writes.Single(w => w.EventId.Name == "ReadingMessage");
+        Assert.AreEqual("Reading message.", log.State.ToString());
+        AssertScope(log);
+
+        log = testSink.Writes.Single(w => w.EventId.Name == "FinishedCall");
+        Assert.AreEqual("Finished gRPC call.", log.State.ToString());
+        AssertScope(log);
+
+        static void AssertScope(WriteContext log)
+        {
+            var scope = (IReadOnlyList<KeyValuePair<string, object>>)log.Scope;
+            Assert.AreEqual(MethodType.Unary, scope[0].Value);
+            Assert.AreEqual(new Uri("/ServiceName/MethodName", UriKind.Relative), scope[1].Value);
+        }
+    }
+
+    [Test]
+    public async Task AsyncUnaryCall_RequestFailure_LogToFactory()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(request =>
+        {
+            return Task.FromException<HttpResponseMessage>(new Exception("An error occurred."));
+        });
+
+        var testSink = new TestSink();
+        var loggerFactory = new TestLoggerFactory(testSink, true);
+
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, loggerFactory);
+
+        // Act
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest()).ResponseAsync);
+        var debugException = ex.Status.DebugException;
+
+        // Assert
+        Assert.NotNull(debugException);
+
+        var log = testSink.Writes.Single(w => w.EventId.Name == "StartingCall");
+        Assert.AreEqual("Starting gRPC call. Method type: 'Unary', URI: 'https://localhost/ServiceName/MethodName'.", log.State.ToString());
+        AssertScope(log);
+
+        log = testSink.Writes.Single(w => w.EventId.Name == "ErrorStartingCall");
+        Assert.AreEqual("Error starting gRPC call.", log.State.ToString());
+        Assert.Null(log.Exception);
+        AssertScope(log);
+
+        log = testSink.Writes.Single(w => w.EventId.Name == "GrpcStatusError");
+        Assert.AreEqual("Call failed with gRPC error status. Status code: 'Internal', Message: 'Error starting gRPC call. Exception: An error occurred.'.", log.State.ToString());
+        Assert.AreEqual(debugException, log.Exception);
+        AssertScope(log);
+
+        log = testSink.Writes.Single(w => w.EventId.Name == "FinishedCall");
+        Assert.AreEqual("Finished gRPC call.", log.State.ToString());
+        AssertScope(log);
+
+        static void AssertScope(WriteContext log)
+        {
+            var scope = (IReadOnlyList<KeyValuePair<string, object>>)log.Scope;
+            Assert.AreEqual(MethodType.Unary, scope[0].Value);
+            Assert.AreEqual(new Uri("/ServiceName/MethodName", UriKind.Relative), scope[1].Value);
+        }
+    }
+
+    [Test]
+    public async Task AsyncUnaryCall_CredentialsFailure_LogToFactory()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(request =>
+        {
+            return Task.FromException<HttpResponseMessage>(new Exception("An error occurred."));
+        });
+
+        var testSink = new TestSink();
+        var loggerFactory = new TestLoggerFactory(testSink, true);
+
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, loggerFactory, configure: o =>
+        {
+            var credentials = CallCredentials.FromInterceptor((c, m) =>
+            {
+                return Task.FromException(new Exception("Credentials error."));
             });
+            o.Credentials = ChannelCredentials.Create(ChannelCredentials.SecureSsl, credentials);
+        });
 
-            var testSink = new TestSink();
-            var loggerFactory = new TestLoggerFactory(testSink, true);
+        // Act
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest()).ResponseAsync);
+        var debugException = ex.Status.DebugException;
 
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, loggerFactory);
+        // Assert
+        Assert.NotNull(debugException);
 
-            // Act
-            var rs = await invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
+        var log = testSink.Writes.Single(w => w.EventId.Name == "StartingCall");
+        Assert.AreEqual("Starting gRPC call. Method type: 'Unary', URI: 'https://localhost/ServiceName/MethodName'.", log.State.ToString());
+        AssertScope(log);
 
-            // Assert
-            Assert.AreEqual("Hello world", rs.Message);
+        log = testSink.Writes.Single(w => w.EventId.Name == "GrpcStatusError");
+        Assert.AreEqual("Call failed with gRPC error status. Status code: 'Internal', Message: 'Error starting gRPC call. Exception: Credentials error.'.", log.State.ToString());
+        Assert.AreEqual(debugException, log.Exception);
+        AssertScope(log);
 
-            var logs = testSink.Writes.Where(w => w.LogLevel >= Microsoft.Extensions.Logging.LogLevel.Debug).ToList();
+        log = testSink.Writes.Single(w => w.EventId.Name == "FinishedCall");
+        Assert.AreEqual("Finished gRPC call.", log.State.ToString());
+        AssertScope(log);
 
-            Assert.AreEqual("Starting gRPC call. Method type: 'Unary', URI: 'https://localhost/ServiceName/MethodName'.", logs[0].State.ToString());
-            AssertScope(logs[0]);
-
-            Assert.AreEqual("Sending message.", logs[1].State.ToString());
-            AssertScope(logs[1]);
-
-            Assert.AreEqual("Reading message.", logs[2].State.ToString());
-            AssertScope(logs[2]);
-
-            Assert.AreEqual("Finished gRPC call.", logs[3].State.ToString());
-            AssertScope(logs[3]);
-
-            static void AssertScope(WriteContext log)
-            {
-                var scope = (IReadOnlyList<KeyValuePair<string, object>>)log.Scope;
-                Assert.AreEqual(MethodType.Unary, scope[0].Value);
-                Assert.AreEqual(new Uri("/ServiceName/MethodName", UriKind.Relative), scope[1].Value);
-            }
+        static void AssertScope(WriteContext log)
+        {
+            var scope = (IReadOnlyList<KeyValuePair<string, object>>)log.Scope;
+            Assert.AreEqual(MethodType.Unary, scope[0].Value);
+            Assert.AreEqual(new Uri("/ServiceName/MethodName", UriKind.Relative), scope[1].Value);
         }
     }
 }

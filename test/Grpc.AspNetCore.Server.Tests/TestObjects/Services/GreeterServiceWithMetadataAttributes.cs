@@ -16,24 +16,22 @@
 
 #endregion
 
-using System.Threading.Tasks;
 using Greet;
 using Grpc.Core;
 
-namespace Grpc.AspNetCore.Server.Tests.TestObjects
-{
-    [Custom("Class")]
-    public class GreeterServiceWithMetadataAttributes : Greeter.GreeterBase
-    {
-        [Custom("Method")]
-        public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context)
-        {
-            return base.SayHello(request, context);
-        }
+namespace Grpc.AspNetCore.Server.Tests.TestObjects;
 
-        public override Task SayHellos(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
-        {
-            return base.SayHellos(request, responseStream, context);
-        }
+[Custom("Class")]
+public class GreeterServiceWithMetadataAttributes : Greeter.GreeterBase
+{
+    [Custom("Method")]
+    public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context)
+    {
+        return base.SayHello(request, context);
+    }
+
+    public override Task SayHellos(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
+    {
+        return base.SayHellos(request, responseStream, context);
     }
 }

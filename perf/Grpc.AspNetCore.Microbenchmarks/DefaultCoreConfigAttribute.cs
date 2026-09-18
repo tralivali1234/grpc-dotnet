@@ -16,13 +16,12 @@
 
 #endregion
 
-using System;
 using BenchmarkDotNet.Configs;
 
-namespace Grpc.AspNetCore.Microbenchmarks
+namespace Grpc.AspNetCore.Microbenchmarks;
+
+[AttributeUsage(AttributeTargets.Assembly)]
+public class DefaultCoreConfigAttribute : Attribute, IConfigSource
 {
-    public class DefaultCoreConfigAttribute : Attribute, IConfigSource
-    {
-        public IConfig Config => new DefaultCoreConfig();
-    }
+    public IConfig Config => new DefaultCoreConfig();
 }

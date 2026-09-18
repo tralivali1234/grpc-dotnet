@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,65 +16,162 @@
 
 #endregion
 
+using Grpc.AspNetCore.Server.Internal;
+using Grpc.Shared.Server;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
-namespace Grpc.AspNetCore.Server.Tests
+namespace Grpc.AspNetCore.Server.Tests;
+
+[TestFixture]
+public class GrpcServicesExtensionsTests
 {
-    [TestFixture]
-    public class GrpcServicesExtensionsTests
+    [Test]
+    public void AddGrpc_ConfigureOptions_OptionsSet()
     {
-        [Test]
-        public void AddGrpc_ConfigureOptions_OptionsSet()
-        {
-            // Arrange
-            var services = new ServiceCollection();
-            services
-                .AddGrpc(o =>
-                {
-                    o.EnableDetailedErrors = true;
-                    o.MaxReceiveMessageSize = 1;
-                    o.MaxSendMessageSize = 1;
-                });
+        // Arrange
+        var services = new ServiceCollection();
+        services
+            .AddGrpc(o =>
+            {
+                o.EnableDetailedErrors = true;
+                o.MaxSendMessageSize = 1;
+            });
 
-            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+        var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
-            // Act
-            var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions>>().Value;
+        // Act
+        var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions>>().Value;
 
-            // Assert
-            Assert.AreEqual(true, options.EnableDetailedErrors);
-            Assert.AreEqual(1, options.MaxReceiveMessageSize);
-            Assert.AreEqual(1, options.MaxSendMessageSize);
-        }
+        // Assert
+        Assert.AreEqual(true, options.EnableDetailedErrors);
+        Assert.AreEqual(MethodOptions.DefaultReceiveMaxMessageSize, options.MaxReceiveMessageSize);
+        Assert.AreEqual(1, options.MaxSendMessageSize);
 
-        [Test]
-        public void AddServiceOptions_ConfigureOptions_OverrideGlobalOptions()
-        {
-            // Arrange
-            var services = new ServiceCollection();
-            services
-                .AddGrpc(o =>
-                {
-                    o.EnableDetailedErrors = true;
-                    o.MaxReceiveMessageSize = 1;
-                    o.MaxSendMessageSize = 1;
-                })
-                .AddServiceOptions<object>(o =>
-                {
-                    o.MaxSendMessageSize = 2;
-                });
+        Assert.AreEqual(2, options.CompressionProviders.Count);
+        Assert.AreEqual("gzip", options.CompressionProviders[0].EncodingName);
+        Assert.AreEqual("deflate", options.CompressionProviders[1].EncodingName);
+    }
 
-            var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+    [Test]
+    public void AddServiceOptions_ConfigureOptions_OverrideGlobalOptions()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services
+            .AddGrpc(o =>
+            {
+                o.EnableDetailedErrors = true;
+                o.MaxSendMessageSize = 1;
+            })
+            .AddServiceOptions<object>(o =>
+            {
+                o.MaxSendMessageSize = 2;
+                o.MaxReceiveMessageSize = 1;
+            });
 
-            // Act
-            var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions<object>>>().Value;
+        var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
-            // Assert
-            Assert.AreEqual(true, options.EnableDetailedErrors);
-            Assert.AreEqual(1, options.MaxReceiveMessageSize);
-            Assert.AreEqual(2, options.MaxSendMessageSize);
-        }
+        // Act
+        var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions<object>>>().Value;
+
+        // Assert
+        Assert.AreEqual(true, options.EnableDetailedErrors);
+        Assert.AreEqual(1, options.MaxReceiveMessageSize);
+        Assert.AreEqual(2, options.MaxSendMessageSize);
+    }
+
+    [Test]
+    public void AddGrpc_MaxReceiveMessageSizeNull_RemainsNull()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services
+            .AddGrpc(o =>
+            {
+                o.MaxReceiveMessageSize = null;
+            });
+
+        var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+        // Act
+        var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions>>().Value;
+
+        // Assert
+        Assert.AreEqual(null, options.MaxReceiveMessageSize);
+    }
+
+    [Test]
+    public void AddServiceOptions_MaxReceiveMessageSizeNull_NullOverrideGlobalOptions()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services
+            .AddGrpc()
+            .AddServiceOptions<object>(o =>
+            {
+                o.MaxReceiveMessageSize = null;
+            });
+
+        var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+        // Act
+        var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions<object>>>().Value;
+
+        // Assert
+        Assert.AreEqual(null, options.MaxReceiveMessageSize);
+    }
+
+    [Test]
+    public void AddServiceOptions_ValuesSpecified_TrueWhenSet()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services
+            .AddGrpc()
+            .AddServiceOptions<object>(o =>
+            {
+                o.MaxReceiveMessageSize = null;
+                o.MaxSendMessageSize = null;
+            });
+
+        var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+        // Act
+        var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions<object>>>().Value;
+
+        // Assert
+        Assert.AreEqual(true, options.MaxReceiveMessageSizeSpecified);
+        Assert.AreEqual(true, options.MaxSendMessageSizeSpecified);
+    }
+
+    [Test]
+    public void AddServiceOptions_ValuesNotSpecified_ResetToNull()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services
+            .AddGrpc()
+            .AddServiceOptions<object>(o =>
+            {
+                o.MaxReceiveMessageSize = 1;
+                o.MaxSendMessageSize = 1;
+
+                o.MaxReceiveMessageSizeSpecified = false;
+                o.MaxSendMessageSizeSpecified = false;
+            });
+
+        var serviceProvider = services.BuildServiceProvider(validateScopes: true);
+
+        // Act
+        var options = serviceProvider.GetRequiredService<IOptions<GrpcServiceOptions<object>>>().Value;
+
+        // Assert
+        Assert.AreEqual(false, options.MaxReceiveMessageSizeSpecified);
+        Assert.AreEqual(null, options.MaxReceiveMessageSize);
+
+        Assert.AreEqual(false, options.MaxSendMessageSizeSpecified);
+        Assert.AreEqual(null, options.MaxSendMessageSize);
     }
 }

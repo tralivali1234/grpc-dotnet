@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,19 +16,16 @@
 
 #endregion
 
-using System;
-using System.Net.Http;
+namespace Grpc.AspNetCore.FunctionalTests.Infrastructure;
 
-namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
+public static class GrpcHttpHelper
 {
-    public static class GrpcHttpHelper
+    public static HttpRequestMessage Create(string url, HttpMethod? method = null)
     {
-        public static HttpRequestMessage Create(string url)
-        {
-            var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Version = new Version(2, 0);
+        var request = new HttpRequestMessage(method ?? HttpMethod.Post, url);
+        request.Version = new Version(2, 0);
+        request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
 
-            return request;
-        }
+        return request;
     }
 }

@@ -16,20 +16,19 @@
 
 #endregion
 
-using System;
+using Grpc.Shared;
 
-namespace Grpc.AspNetCore.Server.Internal
+namespace Grpc.AspNetCore.Server.Internal;
+
+internal static class ErrorMessageHelper
 {
-    internal static class ErrorMessageHelper
+    internal static string BuildErrorMessage(string message, Exception exception, bool? includeExceptionDetails)
     {
-        internal static string BuildErrorMessage(string message, Exception exception, bool? includeExceptionDetails)
+        if (includeExceptionDetails ?? false)
         {
-            if (includeExceptionDetails ?? false)
-            {
-                return $"{message} {exception.GetType().Name}: {exception.Message}";
-            }
-
-            return message;
+            return message + " " + CommonGrpcProtocolHelpers.ConvertToRpcExceptionMessage(exception);
         }
+
+        return message;
     }
 }

@@ -22,38 +22,21 @@ echo "Building solution"
 dotnet build -c Release
 
 echo "Building examples"
-
-example_solutions=( $( ls examples/**/*.sln ) )
-
+example_solutions=( $( ls examples/**/*.slnx ) )
 for example_solution in "${example_solutions[@]}"
 do
-    # dotnet build uses msbuild, and attempts to speed consecutive builds by reusing processes.
-    # This can become a problem when multiple versions of Grpc.Tools are used between builds.
-    # The different versions will conflict. Shutdown build processes between builds to avoid conflicts.
-    # Will be fixed in msbuild 16.5 - https://github.com/microsoft/msbuild/issues/1754
-    dotnet build-server shutdown
-
     dotnet build $example_solution -c Release
 done
 
 echo "Testing solution"
-
+has_failures=false
 test_projects=( $( ls test/**/*Tests.csproj ) )
-
 for test_project in "${test_projects[@]}"
 do
-    # "dotnet test" is hanging when it writes to console for an unknown reason
-    # Tracking issue at https://github.com/microsoft/vstest/issues/2080
-    # Write test output to a text file and then write the text file to console as a workaround
-    {
-        dotnet test $test_project -c Release -v n --no-build &> ${test_project##*/}.log.txt &&
-        echo "Success" &&
-        cat ${test_project##*/}.log.txt
-    } || {
-        echo "Failure" &&
-        cat ${test_project##*/}.log.txt &&
-        exit 1
-    }
+    base_name=$(basename ${test_project%.*})
+    dotnet test $test_project -c Release --no-build --logger "trx;LogFilePrefix=$base_name" --results-directory artifacts/test-results -- NUnit.ConsoleOut=0 || has_failures=true
 done
 
-echo "Finished"
+if [ "$has_failures" = true ]; then
+    exit 1
+fi

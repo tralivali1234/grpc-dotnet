@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,28 +16,33 @@
 
 #endregion
 
-using System;
 using Microsoft.AspNetCore.Http;
 
-namespace Grpc.AspNetCore.Server.Internal
-{
-    internal static class HttpResponseExtensions
-    {
-        public static void ConsolidateTrailers(this HttpResponse httpResponse, HttpContextServerCallContext context)
-        {
-            var trailersDestination = GrpcProtocolHelpers.GetTrailersDestination(httpResponse);
+namespace Grpc.AspNetCore.Server.Internal;
 
-            if (context.HasResponseTrailers)
+internal static class HttpResponseExtensions
+{
+    public static void ConsolidateTrailers(this HttpResponse httpResponse, HttpContextServerCallContext context)
+    {
+        var trailersDestination = GrpcProtocolHelpers.GetTrailersDestination(httpResponse);
+
+        if (context.HasResponseTrailers)
+        {
+            foreach (var trailer in context.ResponseTrailers)
             {
-                foreach (var trailer in context.ResponseTrailers)
+                var value = (trailer.IsBinary) ? Convert.ToBase64String(trailer.ValueBytes) : trailer.Value;
+                try
                 {
-                    var value = (trailer.IsBinary) ? Convert.ToBase64String(trailer.ValueBytes) : trailer.Value;
                     trailersDestination.Append(trailer.Key, value);
                 }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Error adding response trailer '{trailer.Key}'.", ex);
+                }
             }
-
-            // Append status trailers, these overwrite any existing status trailers set via ServerCallContext.ResponseTrailers
-            GrpcProtocolHelpers.SetStatus(trailersDestination, context.Status);
         }
+
+        // Append status trailers, these overwrite any existing status trailers set via ServerCallContext.ResponseTrailers
+        GrpcProtocolHelpers.SetStatus(trailersDestination, context.Status);
     }
 }

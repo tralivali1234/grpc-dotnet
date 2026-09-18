@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -17,66 +17,68 @@
 #endregion
 
 using System.CommandLine;
-using System.CommandLine.Invocation;
-using System.IO;
 using Grpc.Dotnet.Cli.Internal;
 using Grpc.Dotnet.Cli.Options;
 using Grpc.Dotnet.Cli.Properties;
-using Microsoft.Build.Evaluation;
 
-namespace Grpc.Dotnet.Cli.Commands
+namespace Grpc.Dotnet.Cli.Commands;
+
+internal sealed class RemoveCommand : CommandBase
 {
-    internal class RemoveCommand : CommandBase
-    {
-        public RemoveCommand(IConsole console, FileInfo? projectPath)
-            : base(console, projectPath) { }
+    public RemoveCommand(ConsoleService console, string? projectPath, HttpClient httpClient)
+        : base(console, projectPath, httpClient) { }
 
-        public static Command Create()
+    public static Command Create(HttpClient httpClient)
+    {
+        var command = new Command(
+            name: "remove",
+            description: CoreStrings.RemoveCommandDescription);
+
+        var projectOption = CommonOptions.ProjectOption();
+        var referencesArgument = new Argument<string[]>("references")
         {
-            var command = new Command(
-                name: "remove",
-                description: CoreStrings.RemoveCommandDescription);
-            command.AddArgument(new Argument<string[]>
+            Description = CoreStrings.RemoveCommandArgumentDescription,
+            Arity = ArgumentArity.OneOrMore
+        };
+
+        command.Add(projectOption);
+        command.Add(referencesArgument);
+
+        command.SetAction(
+            (context) =>
             {
-                Name = "references",
-                Description = CoreStrings.RemoveCommandArgumentDescription,
-                Arity = ArgumentArity.OneOrMore
+                var project = context.GetValue(projectOption);
+                var references = context.GetValue(referencesArgument) ?? [];
+
+                var console = new ConsoleService(context.InvocationConfiguration.Output, context.InvocationConfiguration.Error);
+                try
+                {
+                    var command = new RemoveCommand(console, project, httpClient);
+                    command.Remove(references);
+
+                    return 0;
+                }
+                catch (CLIToolException e)
+                {
+                    console.LogError(e);
+
+                    return -1;
+                }
             });
 
-            command.AddOption(CommonOptions.ProjectOption());
+        return command;
+    }
 
-            command.Handler = CommandHandler.Create<IConsole, FileInfo, string[]>(
-                (console, project, references) =>
-                {
-                    try
-                    {
-                        var command = new RemoveCommand(console, project);
-                        command.Remove(references);
+    public void Remove(string[] references)
+    {
+        var items = ResolveReferences(references);
 
-                        return 0;
-                    }
-                    catch (CLIToolException e)
-                    {
-                        console.LogError(e);
-
-                        return -1;
-                    }
-                });
-
-            return command;
-        }
-
-        public void Remove(string[] references)
+        foreach (var item in items)
         {
-            var items = ResolveReferences(references);
-
-            foreach (var item in items)
-            {
-                Console.Log(CoreStrings.LogRemoveReference, item.UnevaluatedInclude);
-                Project.RemoveItem(item);
-            }
-
-            Project.Save();
+            Console.Log(CoreStrings.LogRemoveReference, item.UnevaluatedInclude);
+            Project.RemoveItem(item);
         }
+
+        Project.Save();
     }
 }

@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -17,367 +17,374 @@
 #endregion
 
 using System;
-using System.Diagnostics;
-using System.Linq;
-using System.Net.Http;
-using System.Threading;
-using Grpc.Core;
+using System.Diagnostics.CodeAnalysis;
 using Grpc.Net.ClientFactory;
 using Grpc.Net.ClientFactory.Internal;
+using Grpc.Shared;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Options;
 
-namespace Microsoft.Extensions.DependencyInjection
+namespace Microsoft.Extensions.DependencyInjection;
+
+/// <summary>
+/// Extensions methods to configure an <see cref="IServiceCollection"/> for <see cref="IHttpClientFactory"/> with gRPC.
+/// </summary>
+public static class GrpcClientServiceExtensions
 {
     /// <summary>
-    /// Extensions methods to configure an <see cref="IServiceCollection"/> for <see cref="IHttpClientFactory"/> with gRPC.
+    /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
+    /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>. The client name
+    /// will be set to the type name of <typeparamref name="TClient"/>.
     /// </summary>
-    public static class GrpcClientServiceExtensions
+    /// <typeparam name="TClient">
+    /// The type of the gRPC client. The type specified will be registered in the service collection as
+    /// a transient service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
+    /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
+    /// </para>
+    /// <para>
+    /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
+    /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
+    /// <typeparamref name="TClient"/> as the service type.
+    /// </para>
+    /// </remarks>
+    public static IHttpClientBuilder AddGrpcClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services)
+        where TClient : class
     {
-        /// <summary>
-        /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
-        /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>. The client name
-        /// will be set to the type name of <typeparamref name="TClient"/>.
-        /// </summary>
-        /// <typeparam name="TClient">
-        /// The type of the gRPC client. The type specified will be registered in the service collection as
-        /// a transient service.
-        /// </typeparam>
-        /// <param name="services">The <see cref="IServiceCollection"/>.</param>
-        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
-        /// <remarks>
-        /// <para>
-        /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
-        /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
-        /// </para>
-        /// <para>
-        /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
-        /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
-        /// <typeparamref name="TClient"/> as the service type.
-        /// </para>
-        /// </remarks>
-        public static IHttpClientBuilder AddGrpcClient<TClient>(this IServiceCollection services)
-            where TClient : ClientBase
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+
+        return services.AddGrpcClient<TClient>(o => { });
+    }
+
+    /// <summary>
+    /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
+    /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>. The client name
+    /// will be set to the type name of <typeparamref name="TClient"/>.
+    /// </summary>
+    /// <typeparam name="TClient">
+    /// The type of the gRPC client. The type specified will be registered in the service collection as
+    /// a transient service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+    /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
+    /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
+    /// </para>
+    /// <para>
+    /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
+    /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
+    /// <typeparamref name="TClient"/> as the service type.
+    /// </para>
+    /// </remarks>
+    public static IHttpClientBuilder AddGrpcClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, Action<GrpcClientFactoryOptions> configureClient)
+        where TClient : class
+    {
+        var name = TypeNameHelper.GetTypeDisplayName(typeof(TClient), fullName: false);
+
+        return services.AddGrpcClient<TClient>(name, configureClient);
+    }
+
+    /// <summary>
+    /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
+    /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>. The client name
+    /// will be set to the type name of <typeparamref name="TClient"/>.
+    /// </summary>
+    /// <typeparam name="TClient">
+    /// The type of the gRPC client. The type specified will be registered in the service collection as
+    /// a transient service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+    /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
+    /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
+    /// </para>
+    /// <para>
+    /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
+    /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
+    /// <typeparamref name="TClient"/> as the service type.
+    /// </para>
+    /// <para>
+    /// The <see cref="IServiceProvider"/> argument provided to <paramref name="configureClient"/> will be
+    /// a reference to a scoped service provider that shares the lifetime of the handler being constructed.
+    /// </para>
+    /// </remarks>
+    public static IHttpClientBuilder AddGrpcClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, Action<IServiceProvider, GrpcClientFactoryOptions> configureClient)
+        where TClient : class
+    {
+        var name = TypeNameHelper.GetTypeDisplayName(typeof(TClient), fullName: false);
+
+        return services.AddGrpcClient<TClient>(name, configureClient);
+    }
+
+    /// <summary>
+    /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
+    /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>.
+    /// </summary>
+    /// <typeparam name="TClient">
+    /// The type of the gRPC client. The type specified will be registered in the service collection as
+    /// a transient service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+    /// <param name="name">The logical name of the <see cref="HttpClient"/> to configure.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
+    /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
+    /// </para>
+    /// <para>
+    /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
+    /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
+    /// <typeparamref name="TClient"/> as the service type.
+    /// </para>
+    /// </remarks>
+    public static IHttpClientBuilder AddGrpcClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, string name)
+        where TClient : class
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+        ArgumentNullThrowHelper.ThrowIfNull(name);
+
+        return services.AddGrpcClient<TClient>(name, o => { });
+    }
+
+    /// <summary>
+    /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
+    /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>.
+    /// </summary>
+    /// <typeparam name="TClient">
+    /// The type of the gRPC client. The type specified will be registered in the service collection as
+    /// a transient service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+    /// <param name="name">The logical name of the <see cref="HttpClient"/> to configure.</param>
+    /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
+    /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
+    /// </para>
+    /// <para>
+    /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
+    /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
+    /// <typeparamref name="TClient"/> as the service type.
+    /// </para>
+    /// </remarks>
+    public static IHttpClientBuilder AddGrpcClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, string name, Action<GrpcClientFactoryOptions> configureClient)
+        where TClient : class
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+        ArgumentNullThrowHelper.ThrowIfNull(name);
+        ArgumentNullThrowHelper.ThrowIfNull(configureClient);
+
+        services.Configure(name, configureClient);
+
+        return services.AddGrpcClientCore<TClient>(name);
+    }
+
+    /// <summary>
+    /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
+    /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>.
+    /// </summary>
+    /// <typeparam name="TClient">
+    /// The type of the gRPC client. The type specified will be registered in the service collection as
+    /// a transient service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+    /// <param name="name">The logical name of the <see cref="HttpClient"/> to configure.</param>
+    /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
+    /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
+    /// </para>
+    /// <para>
+    /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
+    /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
+    /// <typeparamref name="TClient"/> as the service type.
+    /// </para>
+    /// <para>
+    /// The <see cref="IServiceProvider"/> argument provided to <paramref name="configureClient"/> will be
+    /// a reference to a scoped service provider that shares the lifetime of the handler being constructed.
+    /// </para>
+    /// </remarks>
+    public static IHttpClientBuilder AddGrpcClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, string name, Action<IServiceProvider, GrpcClientFactoryOptions> configureClient)
+        where TClient : class
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+        ArgumentNullThrowHelper.ThrowIfNull(name);
+        ArgumentNullThrowHelper.ThrowIfNull(configureClient);
+
+        services.AddTransient<IConfigureOptions<GrpcClientFactoryOptions>>(services =>
         {
-            if (services == null)
+            return new ConfigureNamedOptions<GrpcClientFactoryOptions>(name, options =>
             {
-                throw new ArgumentNullException(nameof(services));
-            }
+                configureClient(services, options);
+            });
+        });
 
-            var name = TypeNameHelper.GetTypeDisplayName(typeof(TClient), fullName: false);
+        // `IConfigureOptions<GrpcClientFactoryOptions>` presence in builder's ServicesCollection is tested
+        // in gRPC client extension methods that take IHttpClientBuilder. Validation will throw an error if
+        // if gRPC extension methods, e.g. AddInterceptor, are used with client builders that are not from
+        // AddGrpcClient. ConfigureNamedOptions<GrpcClientFactoryOptions> needs to be the value.
+        // We need to cast the service value to the concrete type to get the name.
+        // Needed here because config options registered here are transient.
+        services.AddSingleton<IConfigureOptions<GrpcClientFactoryOptions>>(
+            new ConfigureNamedOptions<GrpcClientFactoryOptions>(name, options => { }));
 
-            return services.AddGrpcClientCore<TClient>(name);
-        }
+        return services.AddGrpcClientCore<TClient>(name);
+    }
 
-        /// <summary>
-        /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
-        /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>. The client name
-        /// will be set to the type name of <typeparamref name="TClient"/>.
-        /// </summary>
-        /// <typeparam name="TClient">
-        /// The type of the gRPC client. The type specified will be registered in the service collection as
-        /// a transient service.
-        /// </typeparam>
-        /// <param name="services">The <see cref="IServiceCollection"/>.</param>
-        /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
-        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
-        /// <remarks>
-        /// <para>
-        /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
-        /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
-        /// </para>
-        /// <para>
-        /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
-        /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
-        /// <typeparamref name="TClient"/> as the service type.
-        /// </para>
-        /// </remarks>
-        public static IHttpClientBuilder AddGrpcClient<TClient>(this IServiceCollection services, Action<GrpcClientFactoryOptions> configureClient)
-            where TClient : ClientBase
+    private static IHttpClientBuilder AddGrpcClientCore<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, string name) where TClient : class
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(name);
+
+        // Transient so that IServiceProvider injected into constructor is for the current scope.
+        services.TryAddTransient<GrpcClientFactory, DefaultGrpcClientFactory>();
+
+        services.TryAddSingleton<GrpcCallInvokerFactory>();
+        services.TryAddSingleton<DefaultClientActivator<TClient>>();
+
+        // Registry is used to track state and report errors **DURING** service registration. This has to be an instance
+        // because we access it by reaching into the service collection.
+        services.TryAddSingleton(new GrpcClientMappingRegistry());
+
+        return services.AddGrpcHttpClient<TClient>(name);
+    }
+
+    /// <summary>
+    /// This is a custom method to register the HttpClient and typed factory. Needed because we need to access the config name when creating the typed client
+    /// </summary>
+    private static IHttpClientBuilder AddGrpcHttpClient<
+#if NET5_0_OR_GREATER
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+#endif
+        TClient>(this IServiceCollection services, string name)
+        where TClient : class
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+
+        var builder = services.AddHttpClient(name);
+
+        builder.Services.AddTransient<TClient>(s =>
         {
-            var name = TypeNameHelper.GetTypeDisplayName(typeof(TClient), fullName: false);
+            var clientFactory = s.GetRequiredService<GrpcClientFactory>();
+            return clientFactory.CreateClient<TClient>(name);
+        });
 
-            return services.AddGrpcClient<TClient>(name, configureClient);
-        }
-
-        /// <summary>
-        /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
-        /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>. The client name
-        /// will be set to the type name of <typeparamref name="TClient"/>.
-        /// </summary>
-        /// <typeparam name="TClient">
-        /// The type of the gRPC client. The type specified will be registered in the service collection as
-        /// a transient service.
-        /// </typeparam>
-        /// <param name="services">The <see cref="IServiceCollection"/>.</param>
-        /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
-        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
-        /// <remarks>
-        /// <para>
-        /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
-        /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
-        /// </para>
-        /// <para>
-        /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
-        /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
-        /// <typeparamref name="TClient"/> as the service type.
-        /// </para>
-        /// <para>
-        /// The <see cref="IServiceProvider"/> argument provided to <paramref name="configureClient"/> will be
-        /// a reference to a scoped service provider that shares the lifetime of the handler being constructed.
-        /// </para>
-        /// </remarks>
-        public static IHttpClientBuilder AddGrpcClient<TClient>(this IServiceCollection services, Action<IServiceProvider, GrpcClientFactoryOptions> configureClient)
-            where TClient : ClientBase
+        // Insert primary handler before other configuration so there is the opportunity to override it.
+        // This should run before ConfigureDefaultHttpClient so the handler can be overriden in defaults.
+        var configurePrimaryHandler = ServiceDescriptor.Singleton<IConfigureOptions<HttpClientFactoryOptions>>(new ConfigureNamedOptions<HttpClientFactoryOptions>(name, options =>
         {
-            var name = TypeNameHelper.GetTypeDisplayName(typeof(TClient), fullName: false);
-
-            return services.AddGrpcClient<TClient>(name, configureClient);
-        }
-
-        /// <summary>
-        /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
-        /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>.
-        /// </summary>
-        /// <typeparam name="TClient">
-        /// The type of the gRPC client. The type specified will be registered in the service collection as
-        /// a transient service.
-        /// </typeparam>
-        /// <param name="services">The <see cref="IServiceCollection"/>.</param>
-        /// <param name="name">The logical name of the <see cref="HttpClient"/> to configure.</param>
-        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
-        /// <remarks>
-        /// <para>
-        /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
-        /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
-        /// </para>
-        /// <para>
-        /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
-        /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
-        /// <typeparamref name="TClient"/> as the service type.
-        /// </para>
-        /// </remarks>
-        public static IHttpClientBuilder AddGrpcClient<TClient>(this IServiceCollection services, string name)
-            where TClient : ClientBase
-        {
-            if (services == null)
+            options.HttpMessageHandlerBuilderActions.Add(b =>
             {
-                throw new ArgumentNullException(nameof(services));
-            }
-
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            return services.AddGrpcClientCore<TClient>(name);
-        }
-
-        /// <summary>
-        /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
-        /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>.
-        /// </summary>
-        /// <typeparam name="TClient">
-        /// The type of the gRPC client. The type specified will be registered in the service collection as
-        /// a transient service.
-        /// </typeparam>
-        /// <param name="services">The <see cref="IServiceCollection"/>.</param>
-        /// <param name="name">The logical name of the <see cref="HttpClient"/> to configure.</param>
-        /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
-        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
-        /// <remarks>
-        /// <para>
-        /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
-        /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
-        /// </para>
-        /// <para>
-        /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
-        /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
-        /// <typeparamref name="TClient"/> as the service type.
-        /// </para>
-        /// </remarks>
-        public static IHttpClientBuilder AddGrpcClient<TClient>(this IServiceCollection services, string name, Action<GrpcClientFactoryOptions> configureClient)
-            where TClient : ClientBase
-        {
-            if (services == null)
-            {
-                throw new ArgumentNullException(nameof(services));
-            }
-
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            if (configureClient == null)
-            {
-                throw new ArgumentNullException(nameof(configureClient));
-            }
-
-            services.Configure(name, configureClient);
-
-            return services.AddGrpcClientCore<TClient>(name);
-        }
-
-        /// <summary>
-        /// Adds the <see cref="IHttpClientFactory"/> and related services to the <see cref="IServiceCollection"/> and configures
-        /// a binding between the <typeparamref name="TClient"/> type and a named <see cref="HttpClient"/>.
-        /// </summary>
-        /// <typeparam name="TClient">
-        /// The type of the gRPC client. The type specified will be registered in the service collection as
-        /// a transient service.
-        /// </typeparam>
-        /// <param name="services">The <see cref="IServiceCollection"/>.</param>
-        /// <param name="name">The logical name of the <see cref="HttpClient"/> to configure.</param>
-        /// <param name="configureClient">A delegate that is used to configure the gRPC client.</param>
-        /// <returns>An <see cref="IHttpClientBuilder"/> that can be used to configure the client.</returns>
-        /// <remarks>
-        /// <para>
-        /// <see cref="HttpClient"/> instances that apply the provided configuration can be retrieved using
-        /// <see cref="IHttpClientFactory.CreateClient(string)"/> and providing the matching name.
-        /// </para>
-        /// <para>
-        /// <typeparamref name="TClient"/> instances constructed with the appropriate <see cref="HttpClient" />
-        /// can be retrieved from <see cref="IServiceProvider.GetService(Type)" /> (and related methods) by providing
-        /// <typeparamref name="TClient"/> as the service type.
-        /// </para>
-        /// <para>
-        /// The <see cref="IServiceProvider"/> argument provided to <paramref name="configureClient"/> will be
-        /// a reference to a scoped service provider that shares the lifetime of the handler being constructed.
-        /// </para>
-        /// </remarks>
-        public static IHttpClientBuilder AddGrpcClient<TClient>(this IServiceCollection services, string name, Action<IServiceProvider, GrpcClientFactoryOptions> configureClient)
-            where TClient : ClientBase
-        {
-            if (services == null)
-            {
-                throw new ArgumentNullException(nameof(services));
-            }
-
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            if (configureClient == null)
-            {
-                throw new ArgumentNullException(nameof(configureClient));
-            }
-
-            services.AddTransient<IConfigureOptions<GrpcClientFactoryOptions>>(services =>
-            {
-                return new ConfigureNamedOptions<GrpcClientFactoryOptions>(name, options =>
+                if (HttpHandlerFactory.TryCreatePrimaryHandler(out var handler))
                 {
-                    configureClient(services, options);
-                });
+#if NET5_0_OR_GREATER
+                    if (handler is SocketsHttpHandler socketsHttpHandler)
+                    {
+                        // A channel is created once per client, lives forever, and the primary handler never changes.
+                        // It's possible that long lived connections cause the client to miss out on DNS changes.
+                        // Replicate the core benefit of a handler lifetime (periodic connection recreation)
+                        // by setting PooledConnectionLifetime to handler lifetime.
+                        socketsHttpHandler.PooledConnectionLifetime = options.HandlerLifetime;
+                    }
+#endif
+
+                    b.PrimaryHandler = handler;
+                }
+                else
+                {
+                    b.PrimaryHandler = UnsupportedHttpHandler.Instance;
+                }
             });
+        }));
+        services.Insert(0, configurePrimaryHandler);
 
-            // `IConfigureOptions<GrpcClientFactoryOptions>` presence in builder's ServicesCollection is tested
-            // in gRPC client extension methods that take IHttpClientBuilder. Validation will throw an error if
-            // if gRPC extension methods, e.g. AddInterceptor, are used with client builders that are not from
-            // AddGrpcClient. ConfigureNamedOptions<GrpcClientFactoryOptions> needs to be the value.
-            // We need to cast the service value to the concrete type to get the name.
-            // Needed here because config options registered here are transient.
-            services.AddSingleton<IConfigureOptions<GrpcClientFactoryOptions>>(
-                new ConfigureNamedOptions<GrpcClientFactoryOptions>(name, options => { }));
-
-            return services.AddGrpcClientCore<TClient>(name);
-        }
-
-        private static IHttpClientBuilder AddGrpcClientCore<TClient>(this IServiceCollection services, string name) where TClient : ClientBase
+        // Some platforms don't have a built-in handler that supports gRPC.
+        // Validate that a handler was set by the app to after all configuration has run.
+        services.PostConfigure<HttpClientFactoryOptions>(name, options =>
         {
-            if (name == null)
+            options.HttpMessageHandlerBuilderActions.Add(builder =>
             {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            services.TryAddSingleton<GrpcClientFactory, DefaultGrpcClientFactory>();
-
-            services.TryAdd(ServiceDescriptor.Transient(typeof(INamedTypedHttpClientFactory<TClient>), typeof(GrpcHttpClientFactory<TClient>)));
-            services.TryAdd(ServiceDescriptor.Singleton(typeof(GrpcHttpClientFactory<TClient>.Cache), typeof(GrpcHttpClientFactory<TClient>.Cache)));
-
-            // Registry is used to track state and report errors **DURING** service registration. This has to be an instance
-            // because we access it by reaching into the service collection.
-            services.TryAddSingleton(new GrpcClientMappingRegistry());
-
-            Action<IServiceProvider, HttpClient> configureTypedClient = (s, httpClient) =>
-            {
-                var os = s.GetRequiredService<IOptionsMonitor<GrpcClientFactoryOptions>>();
-                var clientOptions = os.Get(name);
-
-                httpClient.BaseAddress = clientOptions.Address;
-
-                // Long running server and duplex streaming gRPC requests may not
-                // return any messages for over 100 seconds, triggering a cancellation
-                // of HttpClient.SendAsync. Disable timeout in internally created
-                // HttpClient for channel.
-                //
-                // gRPC deadline should be the recommended way to timeout gRPC calls.
-                //
-                // https://github.com/dotnet/corefx/issues/41650
-                httpClient.Timeout = Timeout.InfiniteTimeSpan;
-            };
-
-            IHttpClientBuilder clientBuilder = services.AddGrpcHttpClient<TClient>(name, configureTypedClient);
-
-            return clientBuilder;
-        }
-
-        /// <summary>
-        /// This is a custom method to register the HttpClient and typed factory. Needed because we need to access the config name when creating the typed client
-        /// </summary>
-        private static IHttpClientBuilder AddGrpcHttpClient<TClient>(this IServiceCollection services, string name, Action<IServiceProvider, HttpClient> configureTypedClient)
-            where TClient : ClientBase
-        {
-            if (services == null)
-            {
-                throw new ArgumentNullException(nameof(services));
-            }
-
-            services.AddHttpClient(name, configureTypedClient);
-
-            var builder = new DefaultHttpClientBuilder(services, name);
-
-            builder.Services.AddTransient<TClient>(s =>
-            {
-                var clientFactory = s.GetRequiredService<GrpcClientFactory>();
-                return clientFactory.CreateClient<TClient>(builder.Name);
+                if (builder.PrimaryHandler == UnsupportedHttpHandler.Instance)
+                {
+                    throw HttpHandlerFactory.CreateUnsupportedHandlerException();
+                }
             });
+        });
 
-            ReserveClient(builder, typeof(TClient), name);
+        ReserveClient(builder, typeof(TClient), name);
 
-            return builder;
+        return builder;
+    }
+
+    private static void ReserveClient(IHttpClientBuilder builder, Type type, string name)
+    {
+        var registry = (GrpcClientMappingRegistry?)builder.Services.Single(sd => sd.ServiceType == typeof(GrpcClientMappingRegistry)).ImplementationInstance;
+        CompatibilityHelpers.Assert(registry != null);
+
+        // Check for same name registered to two different types. This won't work because we rely on named options for the configuration.
+        if (registry.NamedClientRegistrations.TryGetValue(name, out var otherType) && type != otherType)
+        {
+            var message =
+                $"The gRPC client factory already has a registered client with the name '{name}', bound to the type '{otherType.FullName}'. " +
+                $"Client names are computed based on the type name without considering the namespace ('{otherType.Name}'). " +
+                $"Use an overload of AddGrpcClient that accepts a string and provide a unique name to resolve the conflict.";
+            throw new InvalidOperationException(message);
         }
 
-        private class DefaultHttpClientBuilder : IHttpClientBuilder
+        registry.NamedClientRegistrations[name] = type;
+    }
+
+    private sealed class UnsupportedHttpHandler : HttpMessageHandler
+    {
+        public static readonly UnsupportedHttpHandler Instance = new UnsupportedHttpHandler();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            public DefaultHttpClientBuilder(IServiceCollection services, string name)
-            {
-                Services = services;
-                Name = name;
-            }
-
-            public string Name { get; }
-
-            public IServiceCollection Services { get; }
-        }
-
-        private static void ReserveClient(IHttpClientBuilder builder, Type type, string name)
-        {
-            var registry = (GrpcClientMappingRegistry)builder.Services.Single(sd => sd.ServiceType == typeof(GrpcClientMappingRegistry)).ImplementationInstance;
-            Debug.Assert(registry != null);
-
-            // Check for same name registered to two different types. This won't work because we rely on named options for the configuration.
-            if (registry.NamedClientRegistrations.TryGetValue(name, out var otherType) && type != otherType)
-            {
-                var message =
-                    $"The gRPC client factory already has a registered client with the name '{name}', bound to the type '{otherType.FullName}'. " +
-                    $"Client names are computed based on the type name without considering the namespace ('{otherType.Name}'). " +
-                    $"Use an overload of AddGrpcClient that accepts a string and provide a unique name to resolve the conflict.";
-                throw new InvalidOperationException(message);
-            }
-
-            registry.NamedClientRegistrations[name] = type;
+            return Task.FromException<HttpResponseMessage>(HttpHandlerFactory.CreateUnsupportedHandlerException());
         }
     }
 }

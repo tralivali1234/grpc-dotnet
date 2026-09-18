@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,31 +16,69 @@
 
 #endregion
 
-using System;
 using Grpc.Reflection;
+using Grpc.Shared;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
-namespace Microsoft.AspNetCore.Builder
+namespace Microsoft.AspNetCore.Builder;
+
+/// <summary>
+/// Provides extension methods for <see cref="IEndpointRouteBuilder"/> to add gRPC service endpoints.
+/// </summary>
+public static class GrpcReflectionEndpointRouteBuilderExtensions
 {
     /// <summary>
-    /// Provides extension methods for <see cref="IEndpointRouteBuilder"/> to add gRPC service endpoints.
+    /// Maps incoming requests to the gRPC reflection service.
+    /// This service can be queried to discover the gRPC services on the server.
     /// </summary>
-    public static class GrpcReflectionEndpointRouteBuilderExtensions
+    /// <param name="builder">The <see cref="IEndpointRouteBuilder"/> to add the route to.</param>
+    /// <returns>An <see cref="IEndpointConventionBuilder"/> for endpoints associated with the service.</returns>
+    public static IEndpointConventionBuilder MapGrpcReflectionService(this IEndpointRouteBuilder builder)
     {
-        /// <summary>
-        /// Maps incoming requests to the gRPC reflection service.
-        /// This service can be queried to discover the gRPC services on the server.
-        /// </summary>
-        /// <param name="builder">The <see cref="IEndpointRouteBuilder"/> to add the route to.</param>
-        /// <returns>An <see cref="IEndpointConventionBuilder"/> for endpoints associated with the service.</returns>
-        public static IEndpointConventionBuilder MapGrpcReflectionService(this IEndpointRouteBuilder builder)
-        {
-            if (builder == null)
-            {
-                throw new ArgumentNullException(nameof(builder));
-            }
+        ArgumentNullThrowHelper.ThrowIfNull(builder);
 
-            return builder.MapGrpcService<ReflectionServiceImpl>();
+        ValidateServicesRegistered(builder.ServiceProvider);
+
+        var v1AlphaConventionBuilder = builder.MapGrpcService<ReflectionServiceImpl>();
+        var v1ConventionBuilder = builder.MapGrpcService<ReflectionV1ServiceImpl>();
+
+        return new CompositeEndpointConventionBuilder(v1AlphaConventionBuilder, v1ConventionBuilder);
+    }
+
+    private static void ValidateServicesRegistered(IServiceProvider serviceProvider)
+    {
+        var marker = serviceProvider.GetService(typeof(GrpcReflectionMarkerService));
+        if (marker == null)
+        {
+            throw new InvalidOperationException("Unable to find the required services. Please add all the required services by calling " +
+                "'IServiceCollection.AddGrpcReflection()' inside the call to 'ConfigureServices(...)' in the application startup code.");
+        }
+    }
+
+    private sealed class CompositeEndpointConventionBuilder : IEndpointConventionBuilder
+    {
+        private readonly IEndpointConventionBuilder[] _builders;
+
+        public CompositeEndpointConventionBuilder(params IEndpointConventionBuilder[] builders)
+        {
+            _builders = builders;
+        }
+
+        public void Add(Action<EndpointBuilder> convention)
+        {
+            foreach (var builder in _builders)
+            {
+                builder.Add(convention);
+            }
+        }
+
+        public void Finally(Action<EndpointBuilder> finalConvention)
+        {
+            foreach (var builder in _builders)
+            {
+                builder.Finally(finalConvention);
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,60 +16,111 @@
 
 #endregion
 
-using System;
 using System.CommandLine;
-using System.IO;
+using System.CommandLine.Parsing;
 using Grpc.Dotnet.Cli.Commands;
+using Grpc.Dotnet.Cli.Internal;
+using Microsoft.Build.Evaluation;
 using NUnit.Framework;
 
-namespace Grpc.Dotnet.Cli.Tests
+namespace Grpc.Dotnet.Cli.Tests;
+
+[TestFixture]
+public class ListCommandTests : TestBase
 {
-    [TestFixture]
-    public class ListCommandTests : TestBase
+    [Test]
+    public async Task Commandline_List_ListsReferences()
     {
-        [Test]
-        public void List_ListsReferences()
+        var currentDir = Directory.GetCurrentDirectory();
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        var outWriter = new StringWriter();
+        var errorWriter = new StringWriter();
+
+        try
         {
-            var currentDir = Directory.GetCurrentDirectory();
-            var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            // Arrange
+            new DirectoryInfo(Path.Combine(currentDir, "TestAssets", "MultipleReferences")).CopyTo(tempDir);
+            var rootCommand = Program.BuildRootCommand(CreateClient());
 
-            try
-            {
-                // Arrange
-                var testConsole = new TestConsole();
-                new DirectoryInfo(Path.Combine(currentDir, "TestAssets", "MultipleReferences")).CopyTo(tempDir);
+            // Act
+            var result = rootCommand.Parse($"list -p {tempDir}");
+            var errorCode = await result.InvokeAsync(configuration: new InvocationConfiguration { Output = outWriter, Error = errorWriter });
 
-                // Act
-                Directory.SetCurrentDirectory(tempDir);
-                var command = new ListCommand(testConsole, null);
-                command.List();
+            // Assert
+            Assert.AreEqual(0, errorCode, errorWriter.ToString());
 
-                // Assert
-                var output = testConsole.Out.ToString()!;
-                var lines = output.Split(Environment.NewLine);
+            var project = ProjectCollection.GlobalProjectCollection.LoadedProjects.Single(p => p.DirectoryPath == tempDir);
+            project.ReevaluateIfNecessary();
 
-                // First line is the heading and should conatin Protobuf Reference, Service Type, Source URL, Access
-                Assert.True(lines[0].Contains("Protobuf Reference"));
-                Assert.True(lines[0].Contains("Service Type"));
-                Assert.True(lines[0].Contains("Source URL"));
-                Assert.True(lines[0].Contains("Access"));
+            var output = outWriter.ToString();
 
-                // Second line is the reference to
-                //<Protobuf Include="Proto/a.proto">
-                //  <SourceUrl>https://contoso.com/greet.proto</SourceUrl>
-                //</Protobuf>
-                Assert.AreEqual(new string[] { "Proto/a.proto", "Both", "https://contoso.com/greet.proto" }, lines[1].Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            //<Protobuf Include="Proto/a.proto">
+            //  <SourceUrl>https://contoso.com/greet.proto</SourceUrl>
+            //</Protobuf>
+            //<Protobuf Include="Proto/b.proto" Access="Internal"/>
+            var expected = """
+                Protobuf Reference: Proto/a.proto
+                Service Type: Both
+                Source URL: https://contoso.com/greet.proto
 
-                // Third line is the reference to
-                //<Protobuf Include="Proto/b.proto" Access="Internal"/>
-                Assert.AreEqual(new string[] { "Proto/b.proto", "Both", "Internal" }, lines[2].Split(' ', StringSplitOptions.RemoveEmptyEntries));
-            }
-            finally
-            {
-                // Cleanup
-                Directory.SetCurrentDirectory(currentDir);
-                Directory.Delete(tempDir, true);
-            }
+                Protobuf Reference: Proto/b.proto
+                Service Type: Both
+                Access: Internal
+                """;
+            Assert.AreEqual(expected.Trim(), output.Trim());
+        }
+        finally
+        {
+            // Cleanup
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Test]
+    public void List_ListsReferences()
+    {
+        var currentDir = Directory.GetCurrentDirectory();
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        var outWriter = new StringWriter();
+        var errorWriter = new StringWriter();
+
+        try
+        {
+            // Arrange
+            new DirectoryInfo(Path.Combine(currentDir, "TestAssets", "MultipleReferences")).CopyTo(tempDir);
+
+            // Act
+            Directory.SetCurrentDirectory(tempDir);
+            var command = new ListCommand(new ConsoleService(outWriter, errorWriter), null, CreateClient());
+
+            Assert.IsNotNull(command.Project);
+            Assert.AreEqual("test.csproj", Path.GetFileName(command.Project.FullPath));
+
+            command.List();
+
+            // Assert
+            var output = outWriter.ToString();
+
+            //<Protobuf Include="Proto/a.proto">
+            //  <SourceUrl>https://contoso.com/greet.proto</SourceUrl>
+            //</Protobuf>
+            //<Protobuf Include="Proto/b.proto" Access="Internal"/>
+            var expected = """
+                Protobuf Reference: Proto/a.proto
+                Service Type: Both
+                Source URL: https://contoso.com/greet.proto
+
+                Protobuf Reference: Proto/b.proto
+                Service Type: Both
+                Access: Internal
+                """;
+            Assert.AreEqual(expected.Trim(), output.Trim());
+        }
+        finally
+        {
+            // Cleanup
+            Directory.SetCurrentDirectory(currentDir);
+            Directory.Delete(tempDir, true);
         }
     }
 }

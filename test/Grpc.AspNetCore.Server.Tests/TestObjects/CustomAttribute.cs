@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,17 +16,15 @@
 
 #endregion
 
-using System;
+namespace Grpc.AspNetCore.Server.Tests.TestObjects;
 
-namespace Grpc.AspNetCore.Server.Tests.TestObjects
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+public class CustomAttribute : Attribute
 {
-    public class CustomAttribute : Attribute
+    public CustomAttribute(string value)
     {
-        public CustomAttribute(string value)
-        {
-            Value = value;
-        }
-
-        public string Value { get; }
+        Value = value;
     }
+
+    public string Value { get; }
 }

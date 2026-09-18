@@ -16,21 +16,20 @@
 
 #endregion
 
-using System;
-using System.Threading.Tasks;
+namespace Grpc.AspNetCore.Server.Tests.TestObjects;
 
-namespace Grpc.AspNetCore.Server.Tests.TestObjects
+internal class TestGrpcServiceActivator<TGrpcService> : IGrpcServiceActivator<TGrpcService> where TGrpcService : class, new()
 {
-    internal class TestGrpcServiceActivator<TGrpcService> : IGrpcServiceActivator<TGrpcService> where TGrpcService : class, new()
-    {
-        public GrpcActivatorHandle<TGrpcService> Create(IServiceProvider serviceProvider)
-        {
-            return new GrpcActivatorHandle<TGrpcService>(new TGrpcService(), false, null);
-        }
+    public bool Released { get; private set; }
 
-        public ValueTask ReleaseAsync(GrpcActivatorHandle<TGrpcService> service)
-        {
-            return default;
-        }
+    public GrpcActivatorHandle<TGrpcService> Create(IServiceProvider serviceProvider)
+    {
+        return new GrpcActivatorHandle<TGrpcService>(new TGrpcService(), false, null);
+    }
+
+    public ValueTask ReleaseAsync(GrpcActivatorHandle<TGrpcService> service)
+    {
+        Released = true;
+        return default;
     }
 }

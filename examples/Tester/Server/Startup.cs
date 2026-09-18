@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -27,7 +27,8 @@ namespace Server
     {
         public void ConfigureServices(IServiceCollection services)
         {
-            services.AddGrpc();
+            services.AddGrpc(o => o.EnableDetailedErrors = true);
+            services.AddSingleton<IGreeter, Greeter>();
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

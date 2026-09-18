@@ -16,159 +16,250 @@
 
 #endregion
 
-using System.IO;
 using System.IO.Pipelines;
-using System.Net.Http;
-using System.Threading.Tasks;
-using FunctionalTestsWebsite.Services;
 using Greet;
 using Grpc.AspNetCore.FunctionalTests.Infrastructure;
 using Grpc.Core;
 using Grpc.Tests.Shared;
+using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 
-namespace Grpc.AspNetCore.FunctionalTests.Server
+namespace Grpc.AspNetCore.FunctionalTests.Server;
+
+[TestFixture]
+public class ServerStreamingMethodTests : FunctionalTestBase
 {
-    [TestFixture]
-    public class ServerStreamingMethodTests : FunctionalTestBase
+    [Test]
+    public async Task NoBuffering_SuccessResponsesStreamed()
     {
-        [Test]
-        public async Task NoBuffering_SuccessResponsesStreamed()
+        using var httpEventSource = new HttpEventSourceListener(LoggerFactory);
+
+        var methodWrapper = new MethodWrapper
         {
-            // Arrange
-            var requestMessage = new HelloRequest
-            {
-                Name = "World"
-            };
+            Logger = Logger,
+            SyncPoint = new SyncPoint(runContinuationsAsynchronously: true)
+        };
 
-            var requestStream = new MemoryStream();
-            MessageHelpers.WriteMessage(requestStream, requestMessage);
+        async Task SayHellos(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
+        {
+            // Explicitly send the response headers before any streamed content
+            Metadata responseHeaders = new Metadata();
+            responseHeaders.Add("test-response-header", "value");
+            await context.WriteResponseHeadersAsync(responseHeaders);
 
-            var httpRequest = GrpcHttpHelper.Create("Greet.Greeter/SayHellos");
-            httpRequest.Content = new GrpcStreamContent(requestStream);
-
-            // Act
-            var response = await Fixture.Client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead).DefaultTimeout();
-
-            // Assert
-            response.AssertIsSuccessfulGrpcRequest();
-
-            var responseStream = await response.Content.ReadAsStreamAsync().DefaultTimeout();
-            var pipeReader = PipeReader.Create(responseStream);
-
-            for (var i = 0; i < 3; i++)
-            {
-                var greetingTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
-
-                Assert.IsFalse(greetingTask.IsCompleted);
-
-                var greeting = await greetingTask.DefaultTimeout();
-
-                Assert.AreEqual($"How are you World? {i}", greeting.Message);
-            }
-
-            var goodbyeTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
-            Assert.False(goodbyeTask.IsCompleted);
-            Assert.AreEqual("Goodbye World!", (await goodbyeTask.DefaultTimeout()).Message);
-
-            var finishedTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
-            Assert.IsNull(await finishedTask.DefaultTimeout());
+            await methodWrapper.SayHellosAsync(request, responseStream);
         }
 
-        [Test]
-        public async Task WriteResponseHeadersAsyncCore_FlushesHeadersToClient()
+        // Arrange
+        var method = Fixture.DynamicGrpc.AddServerStreamingMethod<HelloRequest, HelloReply>(SayHellos);
+
+        var requestMessage = new HelloRequest
         {
-            // Arrange
-            var requestMessage = new HelloRequest
-            {
-                Name = "World"
-            };
+            Name = "World"
+        };
 
-            var requestStream = new MemoryStream();
-            MessageHelpers.WriteMessage(requestStream, requestMessage);
+        var requestStream = new MemoryStream();
+        MessageHelpers.WriteMessage(requestStream, requestMessage);
 
-            var httpRequest = GrpcHttpHelper.Create("Greet.Greeter/SayHellosSendHeadersFirst");
-            httpRequest.Content = new GrpcStreamContent(requestStream);
+        var httpRequest = GrpcHttpHelper.Create(method.FullName);
+        httpRequest.Content = new GrpcStreamContent(requestStream);
 
-            // Act
-            var response = await Fixture.Client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead).DefaultTimeout();
+        // Act
+        var response = await Fixture.Client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead).DefaultTimeout();
 
-            // Assert
-            response.AssertIsSuccessfulGrpcRequest();
+        // Assert
+        response.AssertIsSuccessfulGrpcRequest();
 
-            var responseStream = await response.Content.ReadAsStreamAsync().DefaultTimeout();
-            var pipeReader = PipeReader.Create(responseStream);
+        var responseStream = await response.Content.ReadAsStreamAsync().DefaultTimeout();
+        var pipeReader = PipeReader.Create(responseStream);
 
-            for (var i = 0; i < 3; i++)
-            {
-                var greetingTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
+        for (var i = 0; i < 3; i++)
+        {
+            var greetingTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
 
-                // The headers are already sent
-                // All responses are streamed
-                Assert.False(greetingTask.IsCompleted);
+            Assert.IsFalse(greetingTask.IsCompleted);
 
-                var greeting = await greetingTask.DefaultTimeout();
+            await methodWrapper.SyncPoint.WaitForSyncPoint().DefaultTimeout();
 
-                Assert.AreEqual($"How are you World? {i}", greeting.Message);
-            }
+            var currentSyncPoint = methodWrapper.SyncPoint;
+            methodWrapper.SyncPoint = new SyncPoint(runContinuationsAsynchronously: true);
+            currentSyncPoint.Continue();
 
-            var goodbyeTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
-            Assert.False(goodbyeTask.IsCompleted);
-            Assert.AreEqual("Goodbye World!", (await goodbyeTask.DefaultTimeout()).Message);
+            var greeting = (await greetingTask.DefaultTimeout())!;
 
-            var finishedTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
-            Assert.IsNull(await finishedTask.DefaultTimeout());
+            Assert.AreEqual($"How are you World? {i}", greeting.Message);
         }
 
-        [Test]
-        public async Task Buffering_SuccessResponsesStreamed()
+        var goodbyeTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
+        Assert.False(goodbyeTask.IsCompleted);
+
+        await methodWrapper.SyncPoint.WaitForSyncPoint().DefaultTimeout();
+        methodWrapper.SyncPoint.Continue();
+
+        Assert.AreEqual("Goodbye World!", (await goodbyeTask.DefaultTimeout())!.Message);
+
+        var finishedTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
+        Assert.IsNull(await finishedTask.DefaultTimeout());
+    }
+
+    [Test]
+    public async Task WriteResponseHeadersAsyncCore_FlushesHeadersToClient()
+    {
+        var methodWrapper = new MethodWrapper
         {
-            static Task SayHellosBufferHint(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
-            {
-                context.WriteOptions = new WriteOptions(WriteFlags.BufferHint);
+            Logger = Logger,
+            SyncPoint = new SyncPoint(runContinuationsAsynchronously: true)
+        };
 
-                return GreeterService.SayHellosCore(request, responseStream);
-            }
+        async Task SayHellosSendHeadersFirst(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
+        {
+            await context.WriteResponseHeadersAsync(Metadata.Empty);
 
-            // Arrange
-            var method = Fixture.DynamicGrpc.AddServerStreamingMethod<HelloRequest, HelloReply>(SayHellosBufferHint);
+            await methodWrapper.SayHellosAsync(request, responseStream);
+        }
 
-            var requestMessage = new HelloRequest
-            {
-                Name = "World"
-            };
+        // Arrange
+        var method = Fixture.DynamicGrpc.AddServerStreamingMethod<HelloRequest, HelloReply>(SayHellosSendHeadersFirst);
 
-            var requestStream = new MemoryStream();
-            MessageHelpers.WriteMessage(requestStream, requestMessage);
+        var requestMessage = new HelloRequest
+        {
+            Name = "World"
+        };
 
-            var httpRequest = GrpcHttpHelper.Create(method.FullName);
-            httpRequest.Content = new GrpcStreamContent(requestStream);
+        var requestStream = new MemoryStream();
+        MessageHelpers.WriteMessage(requestStream, requestMessage);
 
-            // Act
-            var responseTask = Fixture.Client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead).DefaultTimeout();
+        var httpRequest = GrpcHttpHelper.Create(method.FullName);
+        httpRequest.Content = new GrpcStreamContent(requestStream);
 
-            // Assert
-            Assert.IsFalse(responseTask.IsCompleted, "Server should wait for first message from client");
+        // Act
+        var response = await Fixture.Client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead).DefaultTimeout();
 
-            var response = await responseTask.DefaultTimeout();
-            response.AssertIsSuccessfulGrpcRequest();
+        // Assert
+        response.AssertIsSuccessfulGrpcRequest();
 
-            var responseStream = await response.Content.ReadAsStreamAsync().DefaultTimeout();
-            var pipeReader = PipeReader.Create(responseStream);
+        Logger.LogInformation("Headers received. Starting to read stream");
 
+        var responseStream = await response.Content.ReadAsStreamAsync().DefaultTimeout();
+        var pipeReader = PipeReader.Create(responseStream);
+
+        for (var i = 0; i < 3; i++)
+        {
+            Logger.LogInformation($"Reading message {i}.");
+
+            var greetingTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
+
+            // The headers are already sent
+            // All responses are streamed
+            Logger.LogInformation($"Message task completed: {greetingTask.IsCompleted}");
+            Assert.IsFalse(greetingTask.IsCompleted);
+
+            await methodWrapper.SyncPoint.WaitForSyncPoint().DefaultTimeout();
+
+            var currentSyncPoint = methodWrapper.SyncPoint;
+            methodWrapper.SyncPoint = new SyncPoint(runContinuationsAsynchronously: true);
+            currentSyncPoint.Continue();
+
+            var greeting = (await greetingTask.DefaultTimeout())!;
+
+            Logger.LogInformation($"Received message {i}: {greeting.Message}");
+
+            Assert.AreEqual($"How are you World? {i}", greeting.Message);
+        }
+
+        var goodbyeTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
+        Assert.False(goodbyeTask.IsCompleted);
+
+        await methodWrapper.SyncPoint.WaitForSyncPoint().DefaultTimeout();
+        methodWrapper.SyncPoint.Continue();
+
+        Assert.AreEqual("Goodbye World!", (await goodbyeTask.DefaultTimeout())!.Message);
+
+        var finishedTask = MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader);
+        Assert.IsNull(await finishedTask.DefaultTimeout());
+    }
+
+    [Test]
+    public async Task Buffering_SuccessResponsesStreamed()
+    {
+        var methodWrapper = new MethodWrapper
+        {
+            Logger = Logger,
+            SyncPoint = new SyncPoint(runContinuationsAsynchronously: true)
+        };
+
+        Task SayHellosBufferHint(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
+        {
+            context.WriteOptions = new WriteOptions(WriteFlags.BufferHint);
+
+            return methodWrapper.SayHellosAsync(request, responseStream);
+        }
+
+        // Arrange
+        var method = Fixture.DynamicGrpc.AddServerStreamingMethod<HelloRequest, HelloReply>(SayHellosBufferHint);
+
+        var requestMessage = new HelloRequest
+        {
+            Name = "World"
+        };
+
+        var requestStream = new MemoryStream();
+        MessageHelpers.WriteMessage(requestStream, requestMessage);
+
+        var httpRequest = GrpcHttpHelper.Create(method.FullName);
+        httpRequest.Content = new GrpcStreamContent(requestStream);
+
+        // Act
+        var responseTask = Fixture.Client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead).DefaultTimeout();
+
+        // Assert
+        Assert.IsFalse(responseTask.IsCompleted, "Server should wait for first message from client");
+
+        await methodWrapper.SyncPoint.WaitForSyncPoint().DefaultTimeout();
+        methodWrapper.SyncPoint.Continue();
+
+        var response = await responseTask.DefaultTimeout();
+        response.AssertIsSuccessfulGrpcRequest();
+
+        var responseStream = await response.Content.ReadAsStreamAsync().DefaultTimeout();
+        var pipeReader = PipeReader.Create(responseStream);
+
+        for (var i = 0; i < 3; i++)
+        {
+            var greeting = (await MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader).DefaultTimeout())!;
+
+            Assert.AreEqual($"How are you World? {i}", greeting.Message);
+        }
+
+        var goodbye = await MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader).DefaultTimeout();
+        Assert.AreEqual("Goodbye World!", goodbye!.Message);
+
+        Assert.IsNull(await MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader).DefaultTimeout());
+
+        response.AssertTrailerStatus();
+    }
+
+    public class MethodWrapper
+    {
+        public SyncPoint SyncPoint { get; set; } = default!;
+        public ILogger Logger { get; set; } = default!;
+
+        public async Task SayHellosAsync(HelloRequest request, IServerStreamWriter<HelloReply> responseStream)
+        {
             for (var i = 0; i < 3; i++)
             {
-                var greeting = await MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader).DefaultTimeout();
+                await SyncPoint.WaitToContinue();
 
-                Assert.AreEqual($"How are you World? {i}", greeting.Message);
+                var message = $"How are you {request.Name}? {i}";
+
+                Logger.LogInformation("Sending message");
+                await responseStream.WriteAsync(new HelloReply { Message = message });
             }
 
-            var goodbye = await MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader).DefaultTimeout();
-            Assert.AreEqual("Goodbye World!", goodbye.Message);
+            await SyncPoint.WaitToContinue();
 
-            Assert.IsNull(await MessageHelpers.AssertReadStreamMessageAsync<HelloReply>(pipeReader).DefaultTimeout());
-
-            response.AssertTrailerStatus();
+            Logger.LogInformation("Sending message");
+            await responseStream.WriteAsync(new HelloReply { Message = $"Goodbye {request.Name}!" });
         }
     }
 }

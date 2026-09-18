@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,41 +16,46 @@
 
 #endregion
 
-using System;
-using System.Threading.Tasks;
-using Grpc.AspNetCore.Server.Model;
-using Grpc.Core;
+using System.Diagnostics.CodeAnalysis;
 using Grpc.Shared.Server;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Grpc.AspNetCore.Server.Internal.CallHandlers
+namespace Grpc.AspNetCore.Server.Internal.CallHandlers;
+
+internal sealed class DuplexStreamingServerCallHandler<[DynamicallyAccessedMembers(GrpcProtocolConstants.ServiceAccessibility)] TService, TRequest, TResponse> : ServerCallHandlerBase<TService, TRequest, TResponse>
+    where TRequest : class
+    where TResponse : class
+    where TService : class
 {
-    internal class DuplexStreamingServerCallHandler<TService, TRequest, TResponse> : ServerCallHandlerBase<TService, TRequest, TResponse>
-        where TRequest : class
-        where TResponse : class
-        where TService : class
+    private readonly DuplexStreamingServerMethodInvoker<TService, TRequest, TResponse> _invoker;
+
+    public DuplexStreamingServerCallHandler(
+        DuplexStreamingServerMethodInvoker<TService, TRequest, TResponse> invoker,
+        ILoggerFactory loggerFactory)
+        : base(invoker, loggerFactory)
     {
-        private readonly DuplexStreamingServerMethodInvoker<TService, TRequest, TResponse> _invoker;
+        _invoker = invoker;
+    }
 
-        public DuplexStreamingServerCallHandler(
-            DuplexStreamingServerMethodInvoker<TService, TRequest, TResponse> invoker,
-            ILoggerFactory loggerFactory)
-            : base(invoker, loggerFactory)
+    protected override async Task HandleCallAsyncCore(HttpContext httpContext, HttpContextServerCallContext serverCallContext)
+    {
+        // Disable certain features for duplex streaming methods.
+        DisableMinRequestBodyDataRateAndMaxRequestBodySize(httpContext);
+#if NET8_0_OR_GREATER
+        DisableRequestTimeout(httpContext);
+#endif
+
+        var streamReader = new HttpContextStreamReader<TRequest>(serverCallContext, MethodInvoker.Method.RequestMarshaller.ContextualDeserializer);
+        var streamWriter = new HttpContextStreamWriter<TResponse>(serverCallContext, MethodInvoker.Method.ResponseMarshaller.ContextualSerializer);
+        try
         {
-            _invoker = invoker;
+            await _invoker.Invoke(httpContext, serverCallContext, streamReader, streamWriter);
         }
-
-        protected override Task HandleCallAsyncCore(HttpContext httpContext, HttpContextServerCallContext serverCallContext)
+        finally
         {
-            // Disable request body data rate for client streaming
-            DisableMinRequestBodyDataRateAndMaxRequestBodySize(httpContext);
-
-            var streamReader = new HttpContextStreamReader<TRequest>(serverCallContext, MethodInvoker.Method.RequestMarshaller.ContextualDeserializer);
-            var streamWriter = new HttpContextStreamWriter<TResponse>(serverCallContext, MethodInvoker.Method.ResponseMarshaller.ContextualSerializer);
-
-            return _invoker.Invoke(httpContext, serverCallContext, streamReader, streamWriter);
+            streamReader.Complete();
+            streamWriter.Complete();
         }
     }
 }

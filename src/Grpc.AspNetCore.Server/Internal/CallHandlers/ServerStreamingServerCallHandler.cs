@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,39 +16,46 @@
 
 #endregion
 
-using System;
-using System.Threading.Tasks;
-using Grpc.AspNetCore.Server.Model;
-using Grpc.Core;
+using System.Diagnostics.CodeAnalysis;
 using Grpc.Shared.Server;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Grpc.AspNetCore.Server.Internal.CallHandlers
+namespace Grpc.AspNetCore.Server.Internal.CallHandlers;
+
+internal sealed class ServerStreamingServerCallHandler<[DynamicallyAccessedMembers(GrpcProtocolConstants.ServiceAccessibility)] TService, TRequest, TResponse> : ServerCallHandlerBase<TService, TRequest, TResponse>
+    where TRequest : class
+    where TResponse : class
+    where TService : class
 {
-    internal class ServerStreamingServerCallHandler<TService, TRequest, TResponse> : ServerCallHandlerBase<TService, TRequest, TResponse>
-        where TRequest : class
-        where TResponse : class
-        where TService : class
+    private readonly ServerStreamingServerMethodInvoker<TService, TRequest, TResponse> _invoker;
+
+    public ServerStreamingServerCallHandler(
+        ServerStreamingServerMethodInvoker<TService, TRequest, TResponse> invoker,
+        ILoggerFactory loggerFactory)
+        : base(invoker, loggerFactory)
     {
-        private readonly ServerStreamingServerMethodInvoker<TService, TRequest, TResponse> _invoker;
+        _invoker = invoker;
+    }
 
-        public ServerStreamingServerCallHandler(
-            ServerStreamingServerMethodInvoker<TService, TRequest, TResponse> invoker,
-            ILoggerFactory loggerFactory)
-            : base(invoker, loggerFactory)
+    protected override async Task HandleCallAsyncCore(HttpContext httpContext, HttpContextServerCallContext serverCallContext)
+    {
+        // Disable certain features for server streaming methods.
+#if NET8_0_OR_GREATER
+        DisableRequestTimeout(httpContext);
+#endif
+
+        // Decode request
+        var request = await httpContext.Request.BodyReader.ReadSingleMessageAsync<TRequest>(serverCallContext, MethodInvoker.Method.RequestMarshaller.ContextualDeserializer);
+
+        var streamWriter = new HttpContextStreamWriter<TResponse>(serverCallContext, MethodInvoker.Method.ResponseMarshaller.ContextualSerializer);
+        try
         {
-            _invoker = invoker;
-        }
-
-        protected override async Task HandleCallAsyncCore(HttpContext httpContext, HttpContextServerCallContext serverCallContext)
-        {
-            // Decode request
-            var request = await httpContext.Request.BodyReader.ReadSingleMessageAsync<TRequest>(serverCallContext, MethodInvoker.Method.RequestMarshaller.ContextualDeserializer);
-
-            var streamWriter = new HttpContextStreamWriter<TResponse>(serverCallContext, MethodInvoker.Method.ResponseMarshaller.ContextualSerializer);
             await _invoker.Invoke(httpContext, serverCallContext, request, streamWriter);
+        }
+        finally
+        {
+            streamWriter.Complete();
         }
     }
 }

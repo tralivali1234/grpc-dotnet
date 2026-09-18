@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,13 +16,9 @@
 
 #endregion
 
-using System;
-using System.Collections.Generic;
+namespace Grpc.Net.ClientFactory.Internal;
 
-namespace Grpc.Net.ClientFactory.Internal
+internal class GrpcClientMappingRegistry
 {
-    internal class GrpcClientMappingRegistry
-    {
-        public Dictionary<string, Type> NamedClientRegistrations { get; } = new Dictionary<string, Type>();
-    }
+    public Dictionary<string, Type> NamedClientRegistrations { get; } = new Dictionary<string, Type>();
 }

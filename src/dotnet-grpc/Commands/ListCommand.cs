@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,96 +16,102 @@
 
 #endregion
 
-using System;
 using System.CommandLine;
-using System.CommandLine.Invocation;
-using System.CommandLine.Rendering;
-using System.CommandLine.Rendering.Views;
-using System.IO;
-using System.Linq;
 using Grpc.Dotnet.Cli.Internal;
 using Grpc.Dotnet.Cli.Options;
 using Grpc.Dotnet.Cli.Properties;
 using Microsoft.Build.Evaluation;
 
-namespace Grpc.Dotnet.Cli.Commands
+namespace Grpc.Dotnet.Cli.Commands;
+
+internal sealed class ListCommand : CommandBase
 {
-    internal class ListCommand : CommandBase
+    public ListCommand(ConsoleService console, string? projectPath, HttpClient httpClient)
+        : base(console, projectPath, httpClient) { }
+
+    public static Command Create(HttpClient httpClient)
     {
-        public ListCommand(IConsole console, FileInfo? projectPath)
-            : base(console, projectPath) { }
+        var command = new Command(
+            name: "list",
+            description: CoreStrings.ListCommandDescription);
+        var projectOption = CommonOptions.ProjectOption();
 
-        public static Command Create()
-        {
-            var command = new Command(
-                name: "list",
-                description: CoreStrings.ListCommandDescription);
-            command.AddOption(CommonOptions.ProjectOption());
+        command.Add(projectOption);
 
-            command.Handler = CommandHandler.Create<IConsole, FileInfo>(
-                (console, project) =>
+        command.SetAction(
+            (context) =>
+            {
+                var project = context.GetValue(projectOption);
+
+                var console = new ConsoleService(context.InvocationConfiguration.Output, context.InvocationConfiguration.Error);
+                try
                 {
-                    try
-                    {
-                        var command = new ListCommand(console, project);
-                        command.List();
+                    var command = new ListCommand(console, project, httpClient);
+                    command.List();
 
-                        return 0;
-                    }
-                    catch (CLIToolException e)
-                    {
-                        console.LogError(e);
+                    return 0;
+                }
+                catch (CLIToolException e)
+                {
+                    console.LogError(e);
 
-                        return -1;
-                    }
-                });
+                    return -1;
+                }
+            });
 
-            return command;
+        return command;
+    }
+
+    private class ListProtobufElement
+    {
+        public required string ProtobufReference { get; init; }
+        public required string ServiceType { get; init; }
+
+        public string? SourceUrl { get; init; }
+        public string? Access { get; init; }
+        public string? AdditionalImportDirs { get; init; }
+    }
+
+    public void List()
+    {
+        var protobufElements = Project.GetItems(ProtobufElement).ToList();
+        if (protobufElements.Count == 0)
+        {
+            Console.Log(CoreStrings.LogNoReferences);
+            return;
         }
 
-        public void List()
+        var typedProtobufElements = protobufElements.Select(e => new ListProtobufElement
         {
-            var consoleRenderer = new ConsoleRenderer(Console);
-            var protobufElements = Project.GetItems(ProtobufElement).ToList();
-            var table = new TableView<ProjectItem> { Items = protobufElements};
+            ProtobufReference = e.UnevaluatedInclude,
+            ServiceType = e.GetMetadataValue(GrpcServicesElement) is { Length: > 0 } serviceType ? serviceType : "Both",
+            SourceUrl = e.GetMetadataValue(SourceUrlElement),
+            Access = e.GetMetadataValue(AccessElement),
+            AdditionalImportDirs = e.GetMetadataValue(AdditionalImportDirsElement)
+        }).ToList();
 
+        foreach (var element in typedProtobufElements)
+        {
             // Required columns (always displayed)
-            table.AddColumn(r => r.UnevaluatedInclude, CoreStrings.TableColumnProtobufReference);
-            table.AddColumn(r =>
-            {
-                var serviceType = r.GetMetadataValue(GrpcServicesElement);
-                return string.IsNullOrEmpty(serviceType) ? "Both" : serviceType;
-            }, CoreStrings.TableColumnServiceType);
+            Console.Log("{0}: {1}", CoreStrings.TableColumnProtobufReference, element.ProtobufReference);
+            Console.Log("{0}: {1}", CoreStrings.TableColumnServiceType, element.ServiceType);
 
             // Optional columns (only displayed if an element is not default)
-            if (protobufElements.Any(r => !string.IsNullOrEmpty(r.GetMetadataValue(SourceUrlElement))))
+            if (!string.IsNullOrEmpty(element.SourceUrl))
             {
-                table.AddColumn(r => r.GetMetadataValue(SourceUrlElement), CoreStrings.TableColumnSourceUrl);
+                Console.Log("{0}: {1}", CoreStrings.TableColumnSourceUrl, element.SourceUrl);
             }
-
             // The default value is Public set by Grpc.Tools so skip this column if everything is default
-            if (protobufElements.Any(r => !string.Equals(r.GetMetadataValue(AccessElement), Access.Public.ToString(), StringComparison.OrdinalIgnoreCase)))
+            if (!string.IsNullOrEmpty(element.Access) && !string.Equals(element.Access, Access.Public.ToString(), StringComparison.OrdinalIgnoreCase))
             {
-                table.AddColumn(r => r.GetMetadataValue(AccessElement), CoreStrings.TableColumnAccess);
+                Console.Log("{0}: {1}", CoreStrings.TableColumnAccess, element.Access);
+            }
+            if (!string.IsNullOrEmpty(element.AdditionalImportDirs))
+            {
+                Console.Log("{0}: {1}", CoreStrings.TableColumnAdditionalImports, element.AdditionalImportDirs);
             }
 
-            if (protobufElements.Any(r => !string.IsNullOrEmpty(r.GetMetadataValue(AdditionalImportDirsElement))))
-            {
-                table.AddColumn(r => r.GetMetadataValue(AdditionalImportDirsElement), CoreStrings.TableColumnAdditionalImports);
-            }
-
-            var screen = new ScreenView(consoleRenderer, Console) { Child = table };
-            Region region;
-            try
-            {
-                // System.Console.WindowWidth can throw an IOException when runnning without a console attached
-                region = new Region(0, 0, System.Console.WindowWidth, System.Console.WindowHeight);
-            }
-            catch (IOException)
-            {
-                region = new Region(0, 0, int.MaxValue, int.MaxValue);
-            }
-            screen.Child?.Render(consoleRenderer, region);
+            Console.Log(string.Empty);
         }
     }
 }

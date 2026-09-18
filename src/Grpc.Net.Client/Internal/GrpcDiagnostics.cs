@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -18,19 +18,19 @@
 
 using System.Diagnostics;
 
-namespace Grpc.Net.Client.Internal
+namespace Grpc.Net.Client.Internal;
+
+internal static class GrpcDiagnostics
 {
-    internal static class GrpcDiagnostics
-    {
-        // This is a static on a non-generic class so it isn't re-created once for each type argument
-        public static readonly DiagnosticListener DiagnosticListener = new DiagnosticListener("Grpc.Net.Client");
+    // These are static on a non-generic class. We don't want these re-created for each type argument.
+    public static readonly DiagnosticListener DiagnosticListener = new DiagnosticListener("Grpc.Net.Client");
+    public static readonly ActivitySource ActivitySource = new ActivitySource("Grpc.Net.Client");
 
-        public const string ActivityName = "Grpc.Net.Client.GrpcOut";
+    public const string ActivityName = "Grpc.Net.Client.GrpcOut";
 
-        public const string ActivityStartKey = ActivityName + ".Start";
-        public const string ActivityStopKey = ActivityName + ".Stop";
+    public const string ActivityStartKey = ActivityName + ".Start";
+    public const string ActivityStopKey = ActivityName + ".Stop";
 
-        public const string GrpcMethodTagName = "grpc.method";
-        public const string GrpcStatusCodeTagName = "grpc.status_code";
-    }
+    public const string GrpcMethodTagName = "grpc.method";
+    public const string GrpcStatusCodeTagName = "grpc.status_code";
 }

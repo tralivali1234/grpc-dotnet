@@ -16,34 +16,38 @@
 
 #endregion
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
+namespace Microsoft.AspNetCore.Builder;
 
-namespace Microsoft.AspNetCore.Builder
+/// <summary>
+/// Builds conventions that will be used for customization of gRPC service <see cref="EndpointBuilder"/> instances.
+/// </summary>
+public sealed class GrpcServiceEndpointConventionBuilder : IEndpointConventionBuilder
 {
-    /// <summary>
-    /// Builds conventions that will be used for customization of gRPC service <see cref="EndpointBuilder"/> instances.
-    /// </summary>
-    public sealed class GrpcServiceEndpointConventionBuilder : IEndpointConventionBuilder
+    private readonly List<IEndpointConventionBuilder> _endpointConventionBuilders;
+
+    internal GrpcServiceEndpointConventionBuilder(IEnumerable<IEndpointConventionBuilder> endpointConventionBuilders)
     {
-        private readonly List<IEndpointConventionBuilder> _endpointConventionBuilders;
+        _endpointConventionBuilders = endpointConventionBuilders.ToList();
+    }
 
-        internal GrpcServiceEndpointConventionBuilder(IEnumerable<IEndpointConventionBuilder> endpointConventionBuilders)
+    /// <summary>
+    /// Adds the specified convention to the builder. Conventions are used to customize <see cref="EndpointBuilder"/> instances.
+    /// </summary>
+    /// <param name="convention">The convention to add to the builder.</param>
+    public void Add(Action<EndpointBuilder> convention)
+    {
+        foreach (var endpointConventionBuilder in _endpointConventionBuilders)
         {
-            _endpointConventionBuilders = endpointConventionBuilders.ToList();
+            endpointConventionBuilder.Add(convention);
         }
+    }
 
-        /// <summary>
-        /// Adds the specified convention to the builder. Conventions are used to customize <see cref="EndpointBuilder"/> instances.
-        /// </summary>
-        /// <param name="convention">The convention to add to the builder.</param>
-        public void Add(Action<EndpointBuilder> convention)
+    /// <inheritdoc />
+    public void Finally(Action<EndpointBuilder> finallyConvention)
+    {
+        foreach (var endpointConventionBuilder in _endpointConventionBuilders)
         {
-            foreach (var endpointConventionBuilder in _endpointConventionBuilders)
-            {
-                endpointConventionBuilder.Add(convention);
-            }
+            endpointConventionBuilder.Finally(finallyConvention);
         }
     }
 }

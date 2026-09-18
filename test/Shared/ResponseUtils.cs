@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,79 +16,143 @@
 
 #endregion
 
-using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
-using System.IO;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Threading;
-using System.Threading.Tasks;
 using Grpc.Core;
+using Grpc.Shared;
 
-namespace Grpc.Tests.Shared
+namespace Grpc.Tests.Shared;
+
+internal static class ResponseUtils
 {
-    internal static class ResponseUtils
+    internal static readonly MediaTypeHeaderValue GrpcContentTypeHeaderValue = new MediaTypeHeaderValue("application/grpc");
+    internal static readonly Version ProtocolVersion = new Version(2, 0);
+    internal const string MessageEncodingHeader = "grpc-encoding";
+    internal const string IdentityGrpcEncoding = "identity";
+    internal const string StatusTrailer = "grpc-status";
+
+    public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode) =>
+        CreateResponse(statusCode, string.Empty);
+
+    public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode, string payload) =>
+        CreateResponse(statusCode, new StringContent(payload));
+
+    public static HttpResponseMessage CreateResponse(
+        HttpStatusCode statusCode,
+        HttpContent payload,
+        StatusCode? grpcStatusCode = StatusCode.OK,
+        string? grpcEncoding = null,
+        Version? version = null,
+        string? retryPushbackHeader = null,
+        IDictionary<string, string>? customHeaders = null,
+        IDictionary<string, string>? customTrailers = null)
     {
-        internal static readonly MediaTypeHeaderValue GrpcContentTypeHeaderValue = new MediaTypeHeaderValue("application/grpc");
-        internal static readonly Version ProtocolVersion = new Version(2, 0);
-        internal const string MessageEncodingHeader = "grpc-encoding";
-        internal const string IdentityGrpcEncoding = "identity";
-        internal const string StatusTrailer = "grpc-status";
+        payload.Headers.ContentType = GrpcContentTypeHeaderValue;
 
-        public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode) =>
-            CreateResponse(statusCode, string.Empty);
-
-        public static HttpResponseMessage CreateResponse(HttpStatusCode statusCode, string payload) =>
-            CreateResponse(statusCode, new StringContent(payload));
-
-        public static HttpResponseMessage CreateResponse(
-            HttpStatusCode statusCode,
-            HttpContent payload,
-            StatusCode? grpcStatusCode = StatusCode.OK,
-            string? grpcEncoding = null,
-            Version? version = null)
+        var message = new HttpResponseMessage(statusCode)
         {
-            payload.Headers.ContentType = GrpcContentTypeHeaderValue;
+            Content = payload,
+            Version = version ?? ProtocolVersion
+        };
 
-            var message = new HttpResponseMessage(statusCode)
+        message.RequestMessage = new HttpRequestMessage();
+#if NET462
+        message.RequestMessage.Properties[TrailingHeadersHelpers.ResponseTrailersKey] = new ResponseTrailers();
+#endif
+        message.Headers.Add(MessageEncodingHeader, grpcEncoding ?? IdentityGrpcEncoding);
+        if (retryPushbackHeader != null)
+        {
+            message.Headers.Add("grpc-retry-pushback-ms", retryPushbackHeader);
+        }
+
+        if (customHeaders != null)
+        {
+            foreach (var customHeader in customHeaders)
             {
-                Content = payload,
-                Version = version ?? ProtocolVersion
-            };
-
-            message.Headers.Add(MessageEncodingHeader, grpcEncoding ?? IdentityGrpcEncoding);
-
-            if (grpcStatusCode != null)
-            {
-                message.TrailingHeaders.Add(StatusTrailer, grpcStatusCode.Value.ToString("D"));
+                message.Headers.Add(customHeader.Key, customHeader.Value);
             }
-
-            return message;
         }
 
-        private const int MessageDelimiterSize = 4; // how many bytes it takes to encode "Message-Length"
-        private const int HeaderSize = MessageDelimiterSize + 1; // message length + compression flag
-
-        public static Task WriteHeaderAsync(Stream stream, int length, bool compress, CancellationToken cancellationToken)
+        if (grpcStatusCode != null)
         {
-            var headerData = new byte[HeaderSize];
-
-            // Compression flag
-            headerData[0] = compress ? (byte)1 : (byte)0;
-
-            // Message length
-            EncodeMessageLength(length, headerData.AsSpan(1));
-
-            return stream.WriteAsync(headerData, 0, headerData.Length, cancellationToken);
+            message.TrailingHeaders().Add(StatusTrailer, grpcStatusCode.Value.ToString("D"));
         }
 
-        private static void EncodeMessageLength(int messageLength, Span<byte> destination)
+        if (customTrailers != null)
         {
-            Debug.Assert(destination.Length >= MessageDelimiterSize, "Buffer too small to encode message length.");
-
-            BinaryPrimitives.WriteUInt32BigEndian(destination, (uint)messageLength);
+            foreach (var customTrailer in customTrailers)
+            {
+                message.TrailingHeaders().Add(customTrailer.Key, customTrailer.Value);
+            }
         }
+
+        return message;
+    }
+
+    public static HttpResponseMessage CreateHeadersOnlyResponse(
+        HttpStatusCode statusCode,
+        StatusCode grpcStatusCode,
+        string? grpcEncoding = null,
+        Version? version = null,
+        string? retryPushbackHeader = null,
+        IDictionary<string, string>? customHeaders = null)
+    {
+        var message = new HttpResponseMessage(statusCode)
+        {
+            Version = version ?? ProtocolVersion
+        };
+
+        message.RequestMessage = new HttpRequestMessage();
+#if NET462
+        message.RequestMessage.Properties[TrailingHeadersHelpers.ResponseTrailersKey] = new ResponseTrailers();
+#endif
+        message.Headers.Add(MessageEncodingHeader, grpcEncoding ?? IdentityGrpcEncoding);
+        if (retryPushbackHeader != null)
+        {
+            message.Headers.Add("grpc-retry-pushback-ms", retryPushbackHeader);
+        }
+
+        if (customHeaders != null)
+        {
+            foreach (var customHeader in customHeaders)
+            {
+                message.Headers.Add(customHeader.Key, customHeader.Value);
+            }
+        }
+
+        message.Headers.Add(StatusTrailer, grpcStatusCode.ToString("D"));
+
+        return message;
+    }
+
+#if NET462
+    private class ResponseTrailers : HttpHeaders
+    {
+    }
+#endif
+
+    private const int MessageDelimiterSize = 4; // how many bytes it takes to encode "Message-Length"
+    private const int HeaderSize = MessageDelimiterSize + 1; // message length + compression flag
+
+    public static Task WriteHeaderAsync(Stream stream, int length, bool compress, CancellationToken cancellationToken)
+    {
+        var headerData = new byte[HeaderSize];
+
+        // Compression flag
+        headerData[0] = compress ? (byte)1 : (byte)0;
+
+        // Message length
+        EncodeMessageLength(length, headerData.AsSpan(1));
+
+        return stream.WriteAsync(headerData, 0, headerData.Length, cancellationToken);
+    }
+
+    private static void EncodeMessageLength(int messageLength, Span<byte> destination)
+    {
+        Debug.Assert(destination.Length >= MessageDelimiterSize, "Buffer too small to encode message length.");
+
+        BinaryPrimitives.WriteUInt32BigEndian(destination, (uint)messageLength);
     }
 }

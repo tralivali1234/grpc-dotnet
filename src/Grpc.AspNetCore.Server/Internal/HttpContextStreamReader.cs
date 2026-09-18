@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,67 +16,108 @@
 
 #endregion
 
-using System;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Diagnostics;
+using System.IO.Pipelines;
 using Grpc.Core;
+using Grpc.Shared;
+using Microsoft.AspNetCore.Http.Features;
 
-namespace Grpc.AspNetCore.Server.Internal
+namespace Grpc.AspNetCore.Server.Internal;
+
+[DebuggerDisplay("{DebuggerToString(),nq}")]
+[DebuggerTypeProxy(typeof(HttpContextStreamReader<>.HttpContextStreamReaderDebugView))]
+internal sealed class HttpContextStreamReader<TRequest> : IAsyncStreamReader<TRequest> where TRequest : class
 {
-    internal class HttpContextStreamReader<TRequest> : IAsyncStreamReader<TRequest> where TRequest : class
+    private readonly HttpContextServerCallContext _serverCallContext;
+    private readonly Func<DeserializationContext, TRequest> _deserializer;
+    private readonly PipeReader _bodyReader;
+    private readonly IHttpRequestLifetimeFeature _requestLifetimeFeature;
+    private bool _completed;
+    private long _readCount;
+    private bool _endOfStream;
+
+    public HttpContextStreamReader(HttpContextServerCallContext serverCallContext, Func<DeserializationContext, TRequest> deserializer)
     {
-        private static readonly Task<bool> True = Task.FromResult(true);
-        private static readonly Task<bool> False = Task.FromResult(false);
+        _serverCallContext = serverCallContext;
+        _deserializer = deserializer;
 
-        private readonly HttpContextServerCallContext _serverCallContext;
-        private readonly Func<DeserializationContext, TRequest> _deserializer;
+        // Copy HttpContext values.
+        // This is done to avoid a race condition when reading them from HttpContext later when running in a separate thread.
+        _bodyReader = _serverCallContext.HttpContext.Request.BodyReader;
+        // Copy lifetime feature because HttpContext.RequestAborted on .NET 6 doesn't return the real cancellation token.
+        _requestLifetimeFeature = GrpcProtocolHelpers.GetRequestLifetimeFeature(_serverCallContext.HttpContext);
+    }
 
-        public HttpContextStreamReader(HttpContextServerCallContext serverCallContext, Func<DeserializationContext, TRequest> deserializer)
+    public TRequest Current { get; private set; } = default!;
+
+    public void Dispose() { }
+
+    public Task<bool> MoveNext(CancellationToken cancellationToken)
+    {
+        async Task<bool> MoveNextAsync(ValueTask<TRequest?> readStreamTask)
         {
-            _serverCallContext = serverCallContext;
-            _deserializer = deserializer;
+            return ProcessPayload(await readStreamTask);
         }
 
-        // IAsyncStreamReader<T> should declare Current as nullable
-        // Suppress warning when overriding interface definition
-#pragma warning disable CS8613 // Nullability of reference types in return type doesn't match implicitly implemented member.
-        public TRequest? Current { get; private set; }
-#pragma warning restore CS8613 // Nullability of reference types in return type doesn't match implicitly implemented member.
-
-        public void Dispose() { }
-
-        public Task<bool> MoveNext(CancellationToken cancellationToken)
+        if (cancellationToken.IsCancellationRequested)
         {
-            async Task<bool> MoveNextAsync(ValueTask<TRequest?> readStreamTask)
-            {
-                return ProcessPayload(await readStreamTask);
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return Task.FromCanceled<bool>(cancellationToken);
-            }
-
-            var request = _serverCallContext.HttpContext.Request.BodyReader.ReadStreamMessageAsync(_serverCallContext, _deserializer, cancellationToken);
-            if (!request.IsCompletedSuccessfully)
-            {
-                return MoveNextAsync(request);
-            }
-
-            return ProcessPayload(request.Result) ? True : False;
+            return Task.FromCanceled<bool>(cancellationToken);
         }
 
-        private bool ProcessPayload(TRequest? request)
+        if (_completed || _requestLifetimeFeature.RequestAborted.IsCancellationRequested)
         {
-            // Stream is complete
-            if (request == null)
-            {
-                Current = null;
-                return false;
-            }
-
-            Current = request;
-            return true;
+            return Task.FromException<bool>(new InvalidOperationException("Can't read messages after the request is complete."));
         }
+
+        // Clear current before moving next. This prevents rooting the previous value while getting the next one.
+        // In a long running stream this can allow the previous value to be GCed.
+        Current = null!;
+
+        var request = _bodyReader.ReadStreamMessageAsync(_serverCallContext, _deserializer, cancellationToken);
+        if (!request.IsCompletedSuccessfully)
+        {
+            return MoveNextAsync(request);
+        }
+
+        return ProcessPayload(request.Result)
+            ? CommonGrpcProtocolHelpers.TrueTask
+            : CommonGrpcProtocolHelpers.FalseTask;
+    }
+
+    private bool ProcessPayload(TRequest? request)
+    {
+        // Stream is complete
+        if (request == null)
+        {
+            _endOfStream = true;
+            Current = null!;
+            return false;
+        }
+
+        Current = request;
+        Interlocked.Increment(ref _readCount);
+        return true;
+    }
+
+    public void Complete()
+    {
+        _completed = true;
+    }
+
+    private string DebuggerToString() => $"ReadCount = {_readCount}, EndOfStream = {(_endOfStream ? "true" : "false")}";
+
+    private sealed class HttpContextStreamReaderDebugView
+    {
+        private readonly HttpContextStreamReader<TRequest> _reader;
+
+        public HttpContextStreamReaderDebugView(HttpContextStreamReader<TRequest> reader)
+        {
+            _reader = reader;
+        }
+
+        public ServerCallContext ServerCallContext => _reader._serverCallContext;
+        public long ReadCount => _reader._readCount;
+        public TRequest Current => _reader.Current;
+        public bool EndOfStream => _reader._endOfStream;
     }
 }

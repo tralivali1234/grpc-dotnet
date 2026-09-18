@@ -16,17 +16,15 @@
 
 #endregion
 
-using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
 
-namespace Grpc.AspNetCore.Microbenchmarks.Server
+namespace Grpc.AspNetCore.Microbenchmarks.Server;
+
+public class UnaryServerCallHandlerBenchmark : UnaryServerCallHandlerBenchmarkBase
 {
-    public class UnaryServerCallHandlerBenchmark : UnaryServerCallHandlerBenchmarkBase
+    [Benchmark]
+    public Task HandleCallAsync()
     {
-        [Benchmark]
-        public Task HandleCallAsync()
-        {
-            return InvokeUnaryRequestAsync();
-        }
+        return InvokeUnaryRequestAsync();
     }
 }

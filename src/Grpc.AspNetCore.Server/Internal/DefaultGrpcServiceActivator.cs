@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,50 +16,48 @@
 
 #endregion
 
-using System;
-using System.Threading.Tasks;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Grpc.AspNetCore.Server.Internal
+namespace Grpc.AspNetCore.Server.Internal;
+
+internal sealed class DefaultGrpcServiceActivator<[DynamicallyAccessedMembers(GrpcProtocolConstants.ServiceAccessibility)] TGrpcService> : IGrpcServiceActivator<TGrpcService> where TGrpcService : class
 {
-    internal sealed class DefaultGrpcServiceActivator<TGrpcService> : IGrpcServiceActivator<TGrpcService> where TGrpcService : class
+    private static readonly Lazy<ObjectFactory> _objectFactory = new Lazy<ObjectFactory>(static () => ActivatorUtilities.CreateFactory(typeof(TGrpcService), Type.EmptyTypes));
+
+    public GrpcActivatorHandle<TGrpcService> Create(IServiceProvider serviceProvider)
     {
-        private static readonly Lazy<ObjectFactory> _objectFactory = new Lazy<ObjectFactory>(() => ActivatorUtilities.CreateFactory(typeof(TGrpcService), Type.EmptyTypes));
-
-        public GrpcActivatorHandle<TGrpcService> Create(IServiceProvider serviceProvider)
+        var service = serviceProvider.GetService<TGrpcService>();
+        if (service == null)
         {
-            var service = serviceProvider.GetService<TGrpcService>();
-            if (service == null)
-            {
-                service = (TGrpcService)_objectFactory.Value(serviceProvider, Array.Empty<object>());
-                return new GrpcActivatorHandle<TGrpcService>(service, created: true, state: null);
-            }
-
-            return new GrpcActivatorHandle<TGrpcService>(service, created: false, state: null);
+            service = (TGrpcService)_objectFactory.Value(serviceProvider, Array.Empty<object>());
+            return new GrpcActivatorHandle<TGrpcService>(service, created: true, state: null);
         }
 
-        public ValueTask ReleaseAsync(GrpcActivatorHandle<TGrpcService> service)
+        return new GrpcActivatorHandle<TGrpcService>(service, created: false, state: null);
+    }
+
+    public ValueTask ReleaseAsync(GrpcActivatorHandle<TGrpcService> service)
+    {
+        if (service.Instance == null)
         {
-            if (service.Instance == null)
-            {
-                throw new ArgumentException("Service instance is null.", nameof(service));
-            }
-
-            if (service.Created)
-            {
-                if (service.Instance is IAsyncDisposable asyncDisposableService)
-                {
-                    return asyncDisposableService.DisposeAsync();
-                }
-
-                if (service.Instance is IDisposable disposableService)
-                {
-                    disposableService.Dispose();
-                    return default;
-                }
-            }
-
-            return default;
+            throw new ArgumentException("Service instance is null.", nameof(service));
         }
+
+        if (service.Created)
+        {
+            if (service.Instance is IAsyncDisposable asyncDisposableService)
+            {
+                return asyncDisposableService.DisposeAsync();
+            }
+
+            if (service.Instance is IDisposable disposableService)
+            {
+                disposableService.Dispose();
+                return default;
+            }
+        }
+
+        return default;
     }
 }

@@ -1,13 +1,15 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <IsPackable>false</IsPackable>
+    <VerifyDependencyInjectionOpenGenericServiceTrimmability>true</VerifyDependencyInjectionOpenGenericServiceTrimmability>
   </PropertyGroup>
 
   <ItemGroup>
     <Protobuf Include="Proto\greet.proto" GrpcServices="Both" />
     <Protobuf Include="Proto\echo.proto" GrpcServices="Both" />
+    <Protobuf Include="Proto\race.proto" GrpcServices="Both" />
 
     <Compile Include="..\Shared\ActivityReplacer.cs" Link="Infrastructure\ActivityReplacer.cs" />
     <Compile Include="..\Shared\ExceptionAssert.cs" Link="Infrastructure\ExceptionAssert.cs" />
@@ -25,6 +27,8 @@
     <Compile Include="..\Shared\TestRequestBodyPipeFeature.cs" Link="Infrastructure\TestRequestBodyPipeFeature.cs" />
     <Compile Include="..\Shared\TestResponseBodyFeature.cs" Link="Infrastructure\TestResponseBodyFeature.cs" />
     <Compile Include="..\Shared\TestServerCallContext.cs" Link="Infrastructure\TestServerCallContext.cs" />
+    <Compile Include="..\Shared\NUnitLogger.cs" Link="Infrastructure\NUnitLogger.cs" />
+    <Compile Include="..\Shared\Logging\*.cs" LinkBase="Infrastructure\Logging" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,8 +38,6 @@
     <ProjectReference Include="..\..\src\Grpc.AspNetCore\Grpc.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\Grpc.AspNetCore.HealthChecks\Grpc.AspNetCore.HealthChecks.csproj" />
     <ProjectReference Include="..\..\src\Grpc.AspNetCore.Server.Reflection\Grpc.AspNetCore.Server.Reflection.csproj" />
-
-    <PackageReference Include="Microsoft.Extensions.Logging.Testing" Version="$(MicrosoftExtensionsPackageVersion)" />
   </ItemGroup>
 
   <ItemGroup>

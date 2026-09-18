@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,37 +16,64 @@
 
 #endregion
 
-using System;
 using Grpc.AspNetCore.HealthChecks;
 using Grpc.HealthCheck;
+using Grpc.Shared;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 
-namespace Microsoft.Extensions.DependencyInjection
+namespace Microsoft.Extensions.DependencyInjection;
+
+/// <summary>
+/// Extension methods for the gRPC health checks services.
+/// </summary>
+public static class GrpcHealthChecksServiceExtensions
 {
     /// <summary>
-    /// Extension methods for the gRPC health checks services.
+    /// Adds gRPC health check services to the specified <see cref="IServiceCollection" />.
     /// </summary>
-    public static class GrpcHealthChecksServiceExtensions
+    /// <param name="services">The <see cref="IServiceCollection"/> for adding services.</param>
+    /// <returns>An instance of <see cref="IHealthChecksBuilder"/> from which health checks can be registered.</returns>
+    public static IHealthChecksBuilder AddGrpcHealthChecks(this IServiceCollection services)
     {
-        /// <summary>
-        /// Adds gRPC health check services to the specified <see cref="IServiceCollection" />.
-        /// </summary>
-        /// <param name="services">The <see cref="IServiceCollection"/> for adding services.</param>
-        /// <returns>An instance of <see cref="IHealthChecksBuilder"/> from which health checks can be registered.</returns>
-        public static IHealthChecksBuilder AddGrpcHealthChecks(this IServiceCollection services)
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+
+        return AddGrpcHealthChecksCore(services);
+    }
+
+    /// <summary>
+    /// Adds gRPC health check services to the specified <see cref="IServiceCollection" />.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> for adding services.</param>
+    /// <param name="configure">An <see cref="Action{GrpcHealthChecksOptions}"/> to configure the provided <see cref="GrpcHealthChecksOptions"/>.</param>
+    /// <returns>An instance of <see cref="IHealthChecksBuilder"/> from which health checks can be registered.</returns>
+    public static IHealthChecksBuilder AddGrpcHealthChecks(this IServiceCollection services, Action<GrpcHealthChecksOptions> configure)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(services);
+        ArgumentNullThrowHelper.ThrowIfNull(configure);
+
+        var builder = AddGrpcHealthChecksCore(services);
+
+        // Run configure after default registration added so it can be overriden.
+        services.Configure(configure);
+
+        return builder;
+    }
+
+    private static IHealthChecksBuilder AddGrpcHealthChecksCore(IServiceCollection services)
+    {
+        // HealthServiceImpl is designed to be a singleton
+        services.TryAddSingleton<HealthServiceImpl>();
+
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHealthCheckPublisher, GrpcHealthChecksPublisher>());
+
+        services.Configure<GrpcHealthChecksOptions>(options =>
         {
-            if (services == null)
-            {
-                throw new ArgumentNullException(nameof(services));
-            }
+            // Add default registration that uses all results for default service: ""
+            options.Services.Map(string.Empty, r => true);
+        });
 
-            // HealthServiceImpl is designed to be a singleton
-            services.TryAddSingleton<HealthServiceImpl>();
-
-            services.TryAddEnumerable(ServiceDescriptor.Singleton<IHealthCheckPublisher, GrpcHealthChecksPublisher>());
-
-            return services.AddHealthChecks();
-        }
+        return services.AddHealthChecks();
     }
 }

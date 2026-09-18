@@ -10,7 +10,7 @@ var resultText = document.getElementById('result');
 var streamingCall = null;
 
 // Unary call
-sendInput.onclick =function () {
+sendInput.onclick = function () {
     var request = new HelloRequest();
     request.setName(nameInput.value);
 
@@ -30,10 +30,15 @@ streamInput.onclick = function () {
         request.setName(nameInput.value);
 
         streamingCall = client.sayHellos(request, {});
-        streamingCall.on('data', function (response) {
+        streamingCall.on('data', (response) => {
             resultText.innerHTML += htmlEscape(response.getMessage()) + '<br />';
         });
-        streamingCall.on('end', function () {
+        streamingCall.on('status', (status) => {
+            if (status.code == 0) {
+                resultText.innerHTML += 'Done';
+            } else {
+                resultText.innerHTML += 'Error: ' + htmlEscape(status.details);
+            }
         });
     } else {
         streamingCall.cancel();

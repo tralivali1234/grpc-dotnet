@@ -16,21 +16,22 @@
 
 #endregion
 
-using System.Collections.Generic;
-using System.Threading.Tasks;
 using Grpc.Core;
 
-namespace Grpc.AspNetCore.Server.Tests.Infrastructure
-{
-    public class TestServerStreamWriter<T> : IServerStreamWriter<T>
-    {
-        public WriteOptions? WriteOptions { get; set; }
-        public List<T> Responses { get; } = new List<T>();
+namespace Grpc.AspNetCore.Server.Tests.Infrastructure;
 
-        public Task WriteAsync(T message)
+public class TestServerStreamWriter<T> : IServerStreamWriter<T>
+{
+    public WriteOptions? WriteOptions { get; set; }
+    public List<T> Responses { get; } = new List<T>();
+    public Func<T, Task>? OnWriteAsync { get; set; }
+
+    public async Task WriteAsync(T message)
+    {
+        Responses.Add(message);
+        if (OnWriteAsync != null)
         {
-            Responses.Add(message);
-            return Task.CompletedTask;
+            await OnWriteAsync(message);
         }
     }
 }

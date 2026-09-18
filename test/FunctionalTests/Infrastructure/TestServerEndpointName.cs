@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,12 +16,14 @@
 
 #endregion
 
-namespace Grpc.AspNetCore.FunctionalTests.Infrastructure
+namespace Grpc.AspNetCore.FunctionalTests.Infrastructure;
+
+public enum TestServerEndpointName
 {
-    public enum TestServerEndpointName
-    {
-        Http2,
-        Http1,
-        Http1WithTls
-    }
+    Http2,
+    Http1,
+    Http2WithTls,
+    Http1WithTls,
+    UnixDomainSocket,
+    Http3WithTls,
 }

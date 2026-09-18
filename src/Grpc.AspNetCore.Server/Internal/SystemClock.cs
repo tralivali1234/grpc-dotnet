@@ -16,14 +16,11 @@
 
 #endregion
 
-using System;
+namespace Grpc.AspNetCore.Server.Internal;
 
-namespace Grpc.AspNetCore.Server.Internal
+internal sealed class SystemClock : ISystemClock
 {
-    internal class SystemClock : ISystemClock
-    {
-        public static readonly SystemClock Instance = new SystemClock();
+    public static readonly SystemClock Instance = new SystemClock();
 
-        public DateTime UtcNow => DateTime.UtcNow;
-    }
+    public DateTime UtcNow => DateTime.UtcNow;
 }

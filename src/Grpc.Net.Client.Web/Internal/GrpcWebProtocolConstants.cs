@@ -18,16 +18,21 @@
 
 using System.Net.Http.Headers;
 
-namespace Grpc.Net.Client.Web.Internal
-{
-    internal static class GrpcWebProtocolConstants
-    {
-        public const string GrpcContentType = "application/grpc";
-        public const string GrpcWebContentType = "application/grpc-web";
-        public const string GrpcWebTextContentType = "application/grpc-web-text";
+namespace Grpc.Net.Client.Web.Internal;
 
-        public static readonly MediaTypeHeaderValue GrpcHeader = new MediaTypeHeaderValue(GrpcContentType);
-        public static readonly MediaTypeHeaderValue GrpcWebHeader = new MediaTypeHeaderValue(GrpcWebContentType);
-        public static readonly MediaTypeHeaderValue GrpcWebTextHeader = new MediaTypeHeaderValue(GrpcWebTextContentType);
-    }
+internal static class GrpcWebProtocolConstants
+{
+#if !NETSTANDARD2_0
+    public static readonly Version Http2Version = System.Net.HttpVersion.Version20;
+#else
+    public static readonly Version Http2Version = new Version(2, 0);
+#endif
+
+    public const string GrpcContentType = "application/grpc";
+    public const string GrpcWebContentType = "application/grpc-web";
+    public const string GrpcWebTextContentType = "application/grpc-web-text";
+
+    public static readonly MediaTypeHeaderValue GrpcHeader = new MediaTypeHeaderValue(GrpcContentType);
+    public static readonly MediaTypeHeaderValue GrpcWebHeader = new MediaTypeHeaderValue(GrpcWebContentType);
+    public static readonly MediaTypeHeaderValue GrpcWebTextHeader = new MediaTypeHeaderValue(GrpcWebTextContentType);
 }

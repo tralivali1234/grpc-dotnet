@@ -1,7 +1,16 @@
 ﻿Param
 (
-    [bool]$use_tls = $false
+    [bool]$use_tls = $false,
+    [bool]$use_winhttp = $false,
+    [bool]$use_http3 = $false,
+    [bool]$publish_aot = $false,
+    [string]$framework = "net7.0",
+    [string]$grpc_web_mode = "None",
+    [int]$server_port = 50052
 )
+
+# Command line example:
+# .\RunGrpcTests.ps1 -publish_aot $true
 
 $allTests =
   "empty_unary",
@@ -30,22 +39,27 @@ $allTests =
   "server_compressed_streaming"
 
 Write-Host "Running $($allTests.Count) tests" -ForegroundColor Cyan
+Write-Host "Publish AOT: $publish_aot" -ForegroundColor Cyan
 Write-Host "Use TLS: $use_tls" -ForegroundColor Cyan
+Write-Host "Use WinHttp: $use_winhttp" -ForegroundColor Cyan
+Write-Host "Use HTTP/3: $use_http3" -ForegroundColor Cyan
+Write-Host "Framework: $framework" -ForegroundColor Cyan
+Write-Host "gRPC-Web mode: $grpc_web_mode" -ForegroundColor Cyan
 Write-Host
 
+# Build and publish once for performance.
+dotnet publish -r win-x64 -c Release --framework $framework --self-contained --output bin\Publish -p:PublishAot=$publish_aot -p:LatestFramework=$publish_aot
+if ($LASTEXITCODE -ne 0)
+{
+  exit;
+}
+
+# Run client with each test case.
 foreach ($test in $allTests)
 {
   Write-Host "Running $test" -ForegroundColor Cyan
 
-  if (!$use_tls)
-  {
-    dotnet run --use_tls false --server_port 50052 --client_type httpclient --test_case $test
-  }
-  else
-  {
-    # Certificate is for test.google.com host. To run locally, setup the host file to point test.google.com to 127.0.0.1
-    dotnet run --use_tls true --server_port 50052 --client_type httpclient --test_case $test --server_host test.google.com
-  }
+  .\bin\Publish\InteropTestsClient.exe --use_tls $use_tls --server_host localhost --server_port $server_port --client_type httpclient --test_case $test --use_winhttp $use_winhttp --grpc_web_mode $grpc_web_mode --use_http3 $use_http3
 
   Write-Host
 }

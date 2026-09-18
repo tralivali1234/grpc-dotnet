@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,57 +16,53 @@
 
 #endregion
 
-using System;
+using System.Diagnostics.CodeAnalysis;
+using Grpc.AspNetCore.Server.Internal;
 using Grpc.Shared.Server;
 using Microsoft.Extensions.Logging;
+using Log = Grpc.AspNetCore.Server.Model.Internal.BinderServiceMethodProviderLog;
 
-namespace Grpc.AspNetCore.Server.Model.Internal
+namespace Grpc.AspNetCore.Server.Model.Internal;
+
+internal sealed class BinderServiceMethodProvider<[DynamicallyAccessedMembers(GrpcProtocolConstants.ServiceAccessibility)] TService> : IServiceMethodProvider<TService> where TService : class
 {
-    internal class BinderServiceMethodProvider<TService> : IServiceMethodProvider<TService> where TService : class
+    private readonly ILogger<BinderServiceMethodProvider<TService>> _logger;
+
+    public BinderServiceMethodProvider(ILoggerFactory loggerFactory)
     {
-        private readonly ILogger<BinderServiceMethodProvider<TService>> _logger;
+        _logger = loggerFactory.CreateLogger<BinderServiceMethodProvider<TService>>();
+    }
 
-        public BinderServiceMethodProvider(ILoggerFactory loggerFactory)
+    public void OnServiceMethodDiscovery(ServiceMethodProviderContext<TService> context)
+    {
+        var bindMethodInfo = BindMethodFinder.GetBindMethod(typeof(TService));
+
+        // Invoke BindService(ServiceBinderBase, BaseType)
+        if (bindMethodInfo != null)
         {
-            _logger = loggerFactory.CreateLogger<BinderServiceMethodProvider<TService>>();
-        }
+            // The second parameter is always the service base type
+            var serviceParameter = bindMethodInfo.GetParameters()[1];
 
-        public void OnServiceMethodDiscovery(ServiceMethodProviderContext<TService> context)
-        {
-            var bindMethodInfo = BindMethodFinder.GetBindMethod(typeof(TService));
+            var binder = new ProviderServiceBinder<TService>(context, serviceParameter.ParameterType);
 
-            // Invoke BindService(ServiceBinderBase, BaseType)
-            if (bindMethodInfo != null)
+            try
             {
-                // The second parameter is always the service base type
-                var serviceParameter = bindMethodInfo.GetParameters()[1];
-
-                var binder = new ProviderServiceBinder<TService>(context, serviceParameter.ParameterType);
-
-                try
-                {
-                    bindMethodInfo.Invoke(null, new object?[] { binder, null });
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidOperationException($"Error binding gRPC service '{typeof(TService).Name}'.", ex);
-                }
+                bindMethodInfo.Invoke(null, new object?[] { binder, null });
             }
-            else
+            catch (Exception ex)
             {
-                Log.BindMethodNotFound(_logger, typeof(TService));
+                throw new InvalidOperationException($"Error binding gRPC service '{typeof(TService).Name}'.", ex);
             }
         }
-
-        private static class Log
+        else
         {
-            private static readonly Action<ILogger, Type, Exception?> _bindMethodNotFound =
-                LoggerMessage.Define<Type>(LogLevel.Debug, new EventId(1, "BindMethodNotFound"), "Could not find bind method for {ServiceType}.");
-
-            public static void BindMethodNotFound(ILogger logger, Type serviceType)
-            {
-                _bindMethodNotFound(logger, serviceType, null);
-            }
+            Log.BindMethodNotFound(_logger, typeof(TService));
         }
     }
+}
+
+internal static partial class BinderServiceMethodProviderLog
+{
+    [LoggerMessage(Level = LogLevel.Debug, EventId = 1, EventName = "BindMethodNotFound", Message = "Could not find bind method for {ServiceType}.")]
+    public static partial void BindMethodNotFound(ILogger logger, Type serviceType);
 }

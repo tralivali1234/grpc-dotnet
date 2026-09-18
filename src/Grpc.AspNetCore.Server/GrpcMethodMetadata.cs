@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,45 +16,40 @@
 
 #endregion
 
-using System;
+using System.Diagnostics.CodeAnalysis;
+using Grpc.AspNetCore.Server.Internal;
 using Grpc.Core;
+using Grpc.Shared;
 
-namespace Grpc.AspNetCore.Server
+namespace Grpc.AspNetCore.Server;
+
+/// <summary>
+/// Metadata for a gRPC method endpoint.
+/// </summary>
+public sealed class GrpcMethodMetadata
 {
     /// <summary>
-    /// Metadata for a gRPC method endpoint.
+    /// Creates a new instance of <see cref="GrpcMethodMetadata"/> with the provided service type and method.
     /// </summary>
-    public sealed class GrpcMethodMetadata
+    /// <param name="serviceType">The implementing service type.</param>
+    /// <param name="method">The method representation.</param>
+    public GrpcMethodMetadata([DynamicallyAccessedMembers(GrpcProtocolConstants.ServiceAccessibility)] Type serviceType, IMethod method)
     {
-        /// <summary>
-        /// Creates a new instance of <see cref="GrpcMethodMetadata"/> with the provided service type and method.
-        /// </summary>
-        /// <param name="serviceType">The implementing service type.</param>
-        /// <param name="method">The method representation.</param>
-        public GrpcMethodMetadata(Type serviceType, IMethod method)
-        {
-            if (serviceType == null)
-            {
-                throw new ArgumentNullException(nameof(serviceType));
-            }
+        ArgumentNullThrowHelper.ThrowIfNull(serviceType);
+        ArgumentNullThrowHelper.ThrowIfNull(method);
 
-            if (method == null)
-            {
-                throw new ArgumentNullException(nameof(method));
-            }
-
-            ServiceType = serviceType;
-            Method = method;
-        }
-
-        /// <summary>
-        /// Gets the implementing service type.
-        /// </summary>
-        public Type ServiceType { get; }
-
-        /// <summary>
-        /// Gets the method representation.
-        /// </summary>
-        public IMethod Method { get; }
+        ServiceType = serviceType;
+        Method = method;
     }
+
+    /// <summary>
+    /// Gets the implementing service type.
+    /// </summary>
+    [DynamicallyAccessedMembers(GrpcProtocolConstants.ServiceAccessibility)]
+    public Type ServiceType { get; }
+
+    /// <summary>
+    /// Gets the method representation.
+    /// </summary>
+    public IMethod Method { get; }
 }

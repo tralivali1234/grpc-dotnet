@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -17,236 +17,230 @@
 #endregion
 
 using System.Net;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
 using Greet;
 using Grpc.Core;
 using Grpc.Net.Client.Internal;
 using Grpc.Net.Client.Tests.Infrastructure;
 using Grpc.Tests.Shared;
-using Microsoft.Extensions.Logging.Abstractions;
 using NUnit.Framework;
 
-namespace Grpc.Net.Client.Tests
+namespace Grpc.Net.Client.Tests;
+
+[TestFixture]
+public class MaximumMessageSizeTests
 {
-    [TestFixture]
-    public class MaximumMessageSizeTests
+    private async Task<HttpResponseMessage> HandleRequest(HttpRequestMessage request)
     {
-        private async Task<HttpResponseMessage> HandleRequest(HttpRequestMessage request)
+        var requestStream = await request.Content!.ReadAsStreamAsync().DefaultTimeout();
+
+        var helloRequest = await StreamSerializationHelper.ReadMessageAsync(
+            requestStream,
+            ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
+            "gzip",
+            maximumMessageSize: null,
+            GrpcProtocolConstants.DefaultCompressionProviders,
+            singleMessage: true,
+            CancellationToken.None).DefaultTimeout();
+
+        var reply = new HelloReply
         {
-            var requestStream = await request.Content.ReadAsStreamAsync();
+            Message = "Hello " + helloRequest!.Name
+        };
 
-            var helloRequest = await StreamExtensions.ReadMessageAsync(
-                requestStream,
-                NullLogger.Instance,
-                ClientTestHelpers.ServiceMethod.RequestMarshaller.ContextualDeserializer,
-                "gzip",
-                maximumMessageSize: null,
-                GrpcProtocolConstants.DefaultCompressionProviders,
-                singleMessage: true,
-                CancellationToken.None);
+        var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
 
-            var reply = new HelloReply
-            {
-                Message = "Hello " + helloRequest!.Name
-            };
+        return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+    }
 
-            var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
+    [Test]
+    public async Task AsyncUnaryCall_MessageSmallerThanSendMaxMessageSize_Success()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 100);
 
-            return ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-        }
-
-        [Test]
-        public async Task AsyncUnaryCall_MessageSmallerThanSendMaxMessageSize_Success()
+        // Act
+        var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 100);
+            Name = "World"
+        });
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
-            {
-                Name = "World"
-            });
+        // Assert
+        var response = await call.ResponseAsync.DefaultTimeout();
+        Assert.AreEqual("Hello World", response.Message);
+    }
 
-            // Assert
-            var response = await call.ResponseAsync.DefaultTimeout();
-            Assert.AreEqual("Hello World", response.Message);
-        }
+    [Test]
+    public async Task AsyncUnaryCall_MessageLargerThanSendMaxMessageSize_ThrowsError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 1);
 
-        [Test]
-        public async Task AsyncUnaryCall_MessageLargerThanSendMaxMessageSize_ThrowsError()
+        // Act
+        var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 1);
+            Name = "World"
+        });
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
-            {
-                Name = "World"
-            });
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseAsync).DefaultTimeout();
+        Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+        Assert.AreEqual("Sending message exceeds the maximum configured message size.", ex.Status.Detail);
+    }
 
-            // Assert
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseAsync).DefaultTimeout();
-            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
-            Assert.AreEqual("Sending message exceeds the maximum configured message size.", ex.Status.Detail);
-        }
+    [Test]
+    public async Task AsyncUnaryCall_MessageLargerThanDefaultReceiveMaxMessageSize_ThrowsError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
-        [Test]
-        public async Task AsyncUnaryCall_MessageLargerThanDefaultReceiveMaxMessageSize_ThrowsError()
+        // Act
+        var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+            Name = new string('!', GrpcChannel.DefaultMaxReceiveMessageSize + 1) // max size + 1 B
+        });
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
-            {
-                Name = new string('!', GrpcChannel.DefaultMaxReceiveMessageSize + 1) // max size + 1 B
-            });
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseAsync).DefaultTimeout();
+        Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+        Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
+    }
 
-            // Assert
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseAsync).DefaultTimeout();
-            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
-            Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
-        }
+    [Test]
+    public async Task AsyncUnaryCall_RemoveReceiveMaxMessageSize_Success()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = null);
+        var largeName = new string('!', GrpcChannel.DefaultMaxReceiveMessageSize + 1); // max size + 1 B
 
-        [Test]
-        public async Task AsyncUnaryCall_RemoveReceiveMaxMessageSize_Success()
+        // Act
+        var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = null);
-            var largeName = new string('!', GrpcChannel.DefaultMaxReceiveMessageSize + 1); // max size + 1 B
+            Name = largeName
+        });
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
-            {
-                Name = largeName
-            });
+        // Assert
+        var response = await call.ResponseAsync.DefaultTimeout();
+        Assert.AreEqual("Hello " + largeName, response.Message);
+    }
 
-            // Assert
-            var response = await call.ResponseAsync.DefaultTimeout();
-            Assert.AreEqual("Hello " + largeName, response.Message);
-        }
+    [Test]
+    public async Task AsyncUnaryCall_MessageSmallerThanReceiveMaxMessageSize_Success()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 100);
 
-        [Test]
-        public async Task AsyncUnaryCall_MessageSmallerThanReceiveMaxMessageSize_Success()
+        // Act
+        var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 100);
+            Name = "World"
+        });
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
-            {
-                Name = "World"
-            });
+        // Assert
+        var response = await call.ResponseAsync.DefaultTimeout();
+        Assert.AreEqual("Hello World", response.Message);
+    }
 
-            // Assert
-            var response = await call.ResponseAsync.DefaultTimeout();
-            Assert.AreEqual("Hello World", response.Message);
-        }
+    [Test]
+    public async Task AsyncUnaryCall_MessageLargerThanReceiveMaxMessageSize_ThrowsError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 1);
 
-        [Test]
-        public async Task AsyncUnaryCall_MessageLargerThanReceiveMaxMessageSize_ThrowsError()
+        // Act
+        var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 1);
+            Name = "World"
+        });
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest
-            {
-                Name = "World"
-            });
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseAsync).DefaultTimeout();
+        Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+        Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
+    }
 
-            // Assert
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseAsync).DefaultTimeout();
-            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
-            Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
-        }
+    [Test]
+    public async Task AsyncDuplexStreamingCall_MessageSmallerThanSendMaxMessageSize_Success()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 100);
 
-        [Test]
-        public async Task AsyncDuplexStreamingCall_MessageSmallerThanSendMaxMessageSize_Success()
+        // Act
+        var call = invoker.AsyncDuplexStreamingCall();
+        await call.RequestStream.WriteAsync(new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 100);
+            Name = "World"
+        });
+        await call.RequestStream.CompleteAsync().DefaultTimeout();
 
-            // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            await call.RequestStream.WriteAsync(new HelloRequest
-            {
-                Name = "World"
-            });
-            await call.RequestStream.CompleteAsync();
+        // Assert
+        await call.ResponseStream.MoveNext(CancellationToken.None).DefaultTimeout();
+        Assert.AreEqual("Hello World", call.ResponseStream.Current.Message);
+    }
 
-            // Assert
-            await call.ResponseStream.MoveNext(CancellationToken.None).DefaultTimeout();
-            Assert.AreEqual("Hello World", call.ResponseStream.Current.Message);
-        }
+    [Test]
+    public async Task AsyncDuplexStreamingCall_MessageLargerThanSendMaxMessageSize_ThrowsError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 1);
 
-        [Test]
-        public async Task AsyncDuplexStreamingCall_MessageLargerThanSendMaxMessageSize_ThrowsError()
+        // Act
+        var call = invoker.AsyncDuplexStreamingCall();
+
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.RequestStream.WriteAsync(new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxSendMessageSize = 1);
+            Name = "World"
+        }));
+        Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+        Assert.AreEqual("Sending message exceeds the maximum configured message size.", ex.Status.Detail);
+    }
 
-            // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
+    [Test]
+    public async Task AsyncDuplexStreamingCall_MessageSmallerThanReceiveMaxMessageSize_Success()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 100);
 
-            // Assert
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.RequestStream.WriteAsync(new HelloRequest
-            {
-                Name = "World"
-            }));
-            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
-            Assert.AreEqual("Sending message exceeds the maximum configured message size.", ex.Status.Detail);
-        }
-
-        [Test]
-        public async Task AsyncDuplexStreamingCall_MessageSmallerThanReceiveMaxMessageSize_Success()
+        // Act
+        var call = invoker.AsyncDuplexStreamingCall();
+        await call.RequestStream.WriteAsync(new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 100);
+            Name = "World"
+        });
+        await call.RequestStream.CompleteAsync().DefaultTimeout();
 
-            // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            await call.RequestStream.WriteAsync(new HelloRequest
-            {
-                Name = "World"
-            });
-            await call.RequestStream.CompleteAsync();
+        // Assert
+        await call.ResponseStream.MoveNext(CancellationToken.None).DefaultTimeout();
+        Assert.AreEqual("Hello World", call.ResponseStream.Current.Message);
+    }
 
-            // Assert
-            await call.ResponseStream.MoveNext(CancellationToken.None).DefaultTimeout();
-            Assert.AreEqual("Hello World", call.ResponseStream.Current.Message);
-        }
+    [Test]
+    public async Task AsyncDuplexStreamingCall_MessageLargerThanReceiveMaxMessageSize_ThrowsError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 1);
 
-        [Test]
-        public async Task AsyncDuplexStreamingCall_MessageLargerThanReceiveMaxMessageSize_ThrowsError()
+        // Act
+        var call = invoker.AsyncDuplexStreamingCall();
+        await call.RequestStream.WriteAsync(new HelloRequest
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(HandleRequest);
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.MaxReceiveMessageSize = 1);
+            Name = "World"
+        });
+        await call.RequestStream.CompleteAsync().DefaultTimeout();
 
-            // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            await call.RequestStream.WriteAsync(new HelloRequest
-            {
-                Name = "World"
-            });
-            await call.RequestStream.CompleteAsync();
-
-            // Assert
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseStream.MoveNext(CancellationToken.None));
-            Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
-            Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
-        }
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseStream.MoveNext(CancellationToken.None));
+        Assert.AreEqual(StatusCode.ResourceExhausted, ex.StatusCode);
+        Assert.AreEqual("Received message exceeds the maximum configured message size.", ex.Status.Detail);
     }
 }

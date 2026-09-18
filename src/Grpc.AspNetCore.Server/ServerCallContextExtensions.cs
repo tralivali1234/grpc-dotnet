@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,33 +16,48 @@
 
 #endregion
 
-using System;
 using Grpc.AspNetCore.Server.Internal;
+using Grpc.Shared;
 using Microsoft.AspNetCore.Http;
 
-namespace Grpc.Core
-{
-    /// <summary>
-    /// Extension methods for ServerCallContext.
-    /// </summary>
-    public static class ServerCallContextExtensions
-    {
-        /// <summary>
-        /// Retrieve the <see cref="HttpContext"/> from a <see cref="ServerCallContext"/> if possible. Note that read-only access is
-        /// recommended as changes to the HttpContext is not synchronized with the ServerCallContext. The HttpContext is only available
-        /// when using gRPC with ASP.NET Core.
-        /// </summary>
-        /// <param name="serverCallContext">The <see cref="ServerCallContext"/> to extract from.</param>
-        /// <returns>The extracted <see cref="HttpContext"/>. If it cannot be extracted, an error will be thrown.</returns>
-        public static HttpContext GetHttpContext(this ServerCallContext serverCallContext)
-        {
-            var httpContextServerCallContext = serverCallContext as HttpContextServerCallContext;
-            if (httpContextServerCallContext == null)
-            {
-                throw new InvalidOperationException("Could not get HttpContext from ServerCallContext. HttpContext can only be accessed when gRPC services are hosted by Kestrel.");
-            }
+namespace Grpc.Core;
 
+/// <summary>
+/// Extension methods for ServerCallContext.
+/// </summary>
+public static class ServerCallContextExtensions
+{
+    internal const string HttpContextKey = "__HttpContext";
+
+    /// <summary>
+    /// Retrieve the <see cref="HttpContext"/> from the a call's <see cref="ServerCallContext"/>.
+    /// The HttpContext is only available when gRPC services are hosted by ASP.NET Core. An error will be
+    /// thrown if this method is used outside of ASP.NET Core.
+    /// Note that read-only usage of HttpContext is recommended as changes to the HttpContext are not synchronized
+    /// with the ServerCallContext.
+    /// </summary>
+    /// <param name="serverCallContext">The <see cref="ServerCallContext"/>.</param>
+    /// <returns>The call's <see cref="HttpContext"/>.</returns>
+    public static HttpContext GetHttpContext(this ServerCallContext serverCallContext)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(serverCallContext);
+
+        // Attempt to quickly get HttpContext from known call context type.
+        if (serverCallContext is HttpContextServerCallContext httpContextServerCallContext)
+        {
             return httpContextServerCallContext.HttpContext;
         }
+
+        // Fallback to getting HttpContext from user state.
+        // This is to support custom gRPC invokers that replace the default server call context.
+        // They must place the HttpContext in UserState with the `__HttpContext` key.
+        if (serverCallContext.UserState != null &&
+            serverCallContext.UserState.TryGetValue(HttpContextKey, out var c) &&
+            c is HttpContext httpContext)
+        {
+            return httpContext;
+        }
+
+        throw new InvalidOperationException("Could not get HttpContext from ServerCallContext. HttpContext can only be accessed when gRPC services are hosted by ASP.NET Core.");
     }
 }

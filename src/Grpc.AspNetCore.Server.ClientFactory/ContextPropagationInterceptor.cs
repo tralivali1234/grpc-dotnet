@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,118 +16,144 @@
 
 #endregion
 
-using System;
-using System.Threading;
+using System.Diagnostics.CodeAnalysis;
+using Grpc.AspNetCore.Server;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
-namespace Grpc.AspNetCore.Server.ClientFactory
+namespace Grpc.AspNetCore.ClientFactory;
+
+/// <summary>
+/// Interceptor that will set the current request's cancellation token and deadline onto CallOptions.
+/// The interceptor gets the request from IHttpContextAccessor, which is a singleton.
+/// IHttpContextAccessor uses an async local value.
+/// </summary>
+internal partial class ContextPropagationInterceptor : Interceptor
 {
-    /// <summary>
-    /// Interceptor that will set the current request's cancellation token and deadline onto CallOptions.
-    /// This interceptor is registered with a singleton lifetime. The interceptor gets the request from
-    /// IHttpContextAccessor, which is also a singleton. IHttpContextAccessor uses an async local value.
-    /// </summary>
-    internal class ContextPropagationInterceptor : Interceptor
+    private readonly GrpcContextPropagationOptions _options;
+    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly ILogger _logger;
+
+    public ContextPropagationInterceptor(GrpcContextPropagationOptions options, IHttpContextAccessor httpContextAccessor, ILogger<ContextPropagationInterceptor> logger)
     {
-        private readonly IHttpContextAccessor _httpContextAccessor;
+        _options = options;
+        _httpContextAccessor = httpContextAccessor;
+        _logger = logger;
+    }
 
-        public ContextPropagationInterceptor(IHttpContextAccessor httpContextAccessor)
+    public override AsyncClientStreamingCall<TRequest, TResponse> AsyncClientStreamingCall<TRequest, TResponse>(ClientInterceptorContext<TRequest, TResponse> context, AsyncClientStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        var call = continuation(ConfigureContext(context, out var cts));
+        if (cts == null)
         {
-            _httpContextAccessor = httpContextAccessor;
+            return call;
         }
-
-        public override AsyncClientStreamingCall<TRequest, TResponse> AsyncClientStreamingCall<TRequest, TResponse>(ClientInterceptorContext<TRequest, TResponse> context, AsyncClientStreamingCallContinuation<TRequest, TResponse> continuation)
+        else
         {
-            var call = continuation(ConfigureContext(context, out var cts));
-            if (cts == null)
-            {
-                return call;
-            }
-            else
-            {
-                return new AsyncClientStreamingCall<TRequest, TResponse>(
-                    call.RequestStream,
-                    call.ResponseAsync,
-                    call.ResponseHeadersAsync,
-                    call.GetStatus,
-                    call.GetTrailers,
-                    () => { call.Dispose(); cts.Dispose(); });
-            }
+            var state = CreateContextState(call, cts);
+            return new AsyncClientStreamingCall<TRequest, TResponse>(
+                requestStream: call.RequestStream,
+                responseAsync: OnResponseAsync(call.ResponseAsync, state),
+                responseHeadersAsync: ClientStreamingCallbacks<TRequest, TResponse>.GetResponseHeadersAsync,
+                getStatusFunc: ClientStreamingCallbacks<TRequest, TResponse>.GetStatus,
+                getTrailersFunc: ClientStreamingCallbacks<TRequest, TResponse>.GetTrailers,
+                disposeAction: ClientStreamingCallbacks<TRequest, TResponse>.Dispose,
+                state);
         }
+    }
 
-        public override AsyncDuplexStreamingCall<TRequest, TResponse> AsyncDuplexStreamingCall<TRequest, TResponse>(ClientInterceptorContext<TRequest, TResponse> context, AsyncDuplexStreamingCallContinuation<TRequest, TResponse> continuation)
+    public override AsyncDuplexStreamingCall<TRequest, TResponse> AsyncDuplexStreamingCall<TRequest, TResponse>(ClientInterceptorContext<TRequest, TResponse> context, AsyncDuplexStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        var call = continuation(ConfigureContext(context, out var cts));
+        if (cts == null)
         {
-            var call = continuation(ConfigureContext(context, out var cts));
-            if (cts == null)
-            {
-                return call;
-            }
-            else
-            {
-                return new AsyncDuplexStreamingCall<TRequest, TResponse>(
-                    call.RequestStream,
-                    call.ResponseStream,
-                    call.ResponseHeadersAsync,
-                    call.GetStatus,
-                    call.GetTrailers,
-                    () => { call.Dispose(); cts.Dispose(); });
-            }
+            return call;
         }
-
-        public override AsyncServerStreamingCall<TResponse> AsyncServerStreamingCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context, AsyncServerStreamingCallContinuation<TRequest, TResponse> continuation)
+        else
         {
-            var call = continuation(request, ConfigureContext(context, out var cts));
-            if (cts == null)
-            {
-                return call;
-            }
-            else
-            {
-                return new AsyncServerStreamingCall<TResponse>(
-                    call.ResponseStream,
-                    call.ResponseHeadersAsync,
-                    call.GetStatus,
-                    call.GetTrailers,
-                    () => { call.Dispose(); cts.Dispose(); });
-            }
+            var state = CreateContextState(call, cts);
+            return new AsyncDuplexStreamingCall<TRequest, TResponse>(
+                requestStream: call.RequestStream,
+                responseStream: new ResponseStreamWrapper<TResponse>(call.ResponseStream, state),
+                responseHeadersAsync: DuplexStreamingCallbacks<TRequest, TResponse>.GetResponseHeadersAsync,
+                getStatusFunc: DuplexStreamingCallbacks<TRequest, TResponse>.GetStatus,
+                getTrailersFunc: DuplexStreamingCallbacks<TRequest, TResponse>.GetTrailers,
+                disposeAction: DuplexStreamingCallbacks<TRequest, TResponse>.Dispose,
+                state);
         }
+    }
 
-        public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context, AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
+    public override AsyncServerStreamingCall<TResponse> AsyncServerStreamingCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context, AsyncServerStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        var call = continuation(request, ConfigureContext(context, out var cts));
+        if (cts == null)
         {
-            var call = continuation(request, ConfigureContext(context, out var cts));
-            if (cts == null)
-            {
-                return call;
-            }
-            else
-            {
-                return new AsyncUnaryCall<TResponse>(
-                    call.ResponseAsync,
-                    call.ResponseHeadersAsync,
-                    call.GetStatus,
-                    call.GetTrailers,
-                    () => { call.Dispose(); cts.Dispose(); });
-            }
+            return call;
         }
-
-        public override TResponse BlockingUnaryCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context, BlockingUnaryCallContinuation<TRequest, TResponse> continuation)
+        else
         {
-            var response = continuation(request, ConfigureContext(context, out var cts));
-            cts?.Dispose();
-            return response;
+            var state = CreateContextState(call, cts);
+            return new AsyncServerStreamingCall<TResponse>(
+                responseStream: new ResponseStreamWrapper<TResponse>(call.ResponseStream, state),
+                responseHeadersAsync: ServerStreamingCallbacks<TResponse>.GetResponseHeadersAsync,
+                getStatusFunc: ServerStreamingCallbacks<TResponse>.GetStatus,
+                getTrailersFunc: ServerStreamingCallbacks<TResponse>.GetTrailers,
+                disposeAction: ServerStreamingCallbacks<TResponse>.Dispose,
+                state);
         }
+    }
 
-        private ClientInterceptorContext<TRequest, TResponse> ConfigureContext<TRequest, TResponse>(ClientInterceptorContext<TRequest, TResponse> context, out CancellationTokenSource? linkedCts)
-            where TRequest : class
-            where TResponse : class
+    public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context, AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
+    {
+        var call = continuation(request, ConfigureContext(context, out var cts));
+        if (cts == null)
         {
-            linkedCts = null;
+            return call;
+        }
+        else
+        {
+            var state = CreateContextState(call, cts);
+            return new AsyncUnaryCall<TResponse>(
+                responseAsync: OnResponseAsync(call.ResponseAsync, state),
+                responseHeadersAsync: UnaryCallbacks<TResponse>.GetResponseHeadersAsync,
+                getStatusFunc: UnaryCallbacks<TResponse>.GetStatus,
+                getTrailersFunc: UnaryCallbacks<TResponse>.GetTrailers,
+                disposeAction: UnaryCallbacks<TResponse>.Dispose,
+                state);
+        }
+    }
 
-            var options = context.Options;
-            var serverCallContext = GetServerCallContext();
+    public override TResponse BlockingUnaryCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context, BlockingUnaryCallContinuation<TRequest, TResponse> continuation)
+    {
+        var response = continuation(request, ConfigureContext(context, out var cts));
+        cts?.Dispose();
+        return response;
+    }
 
+    // Automatically dispose state after awaiting the response.
+    private static async Task<TResponse> OnResponseAsync<TResponse>(Task<TResponse> task, IDisposable state)
+    {
+        try
+        {
+            return await task.ConfigureAwait(false);
+        }
+        finally
+        {
+            state.Dispose();
+        }
+    }
+
+    private ClientInterceptorContext<TRequest, TResponse> ConfigureContext<TRequest, TResponse>(ClientInterceptorContext<TRequest, TResponse> context, out CancellationTokenSource? linkedCts)
+        where TRequest : class
+        where TResponse : class
+    {
+        linkedCts = null;
+
+        var options = context.Options;
+        if (TryGetServerCallContext(out var serverCallContext, out var errorMessage))
+        {
             // Use propagated deadline if it is smaller than the specified deadline
             if (serverCallContext.Deadline < context.Options.Deadline.GetValueOrDefault(DateTime.MaxValue))
             {
@@ -148,25 +174,132 @@ namespace Grpc.AspNetCore.Server.ClientFactory
                     options = options.WithCancellationToken(serverCallContext.CancellationToken);
                 }
             }
-
-            return new ClientInterceptorContext<TRequest, TResponse>(context.Method, context.Host, options);
         }
-
-        private ServerCallContext GetServerCallContext()
+        else
         {
-            var httpContext = _httpContextAccessor.HttpContext;
-            if (httpContext == null)
-            {
-                throw new InvalidOperationException("Unable to propagate server context values to the call. Can't find the current HttpContext.");
-            }
+            Log.PropagateServerCallContextFailure(_logger, errorMessage);
 
-            var serverCallContext = httpContext.Features.Get<IServerCallContextFeature>()?.ServerCallContext;
-            if (serverCallContext == null)
+            if (!_options.SuppressContextNotFoundErrors)
             {
-                throw new InvalidOperationException("Unable to propagate server context values to the call. Can't find the current gRPC ServerCallContext.");
+                throw new InvalidOperationException("Unable to propagate server context values to the call. " + errorMessage);
             }
-
-            return serverCallContext;
         }
+
+        return new ClientInterceptorContext<TRequest, TResponse>(context.Method, context.Host, options);
+    }
+
+    private bool TryGetServerCallContext([NotNullWhen(true)] out ServerCallContext? serverCallContext, [NotNullWhen(false)] out string? errorMessage)
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        if (httpContext == null)
+        {
+            errorMessage = "Can't find the current HttpContext.";
+            serverCallContext = null;
+            return false;
+        }
+
+        serverCallContext = httpContext.Features.Get<IServerCallContextFeature>()?.ServerCallContext;
+        if (serverCallContext == null)
+        {
+            errorMessage = "Can't find the gRPC ServerCallContext on the current HttpContext.";
+            serverCallContext = null;
+            return false;
+        }
+
+        errorMessage = null;
+        return true;
+    }
+
+    private ContextState<TCall> CreateContextState<TCall>(TCall call, CancellationTokenSource cancellationTokenSource) where TCall : IDisposable =>
+        new ContextState<TCall>(call, cancellationTokenSource);
+
+    private sealed class ContextState<TCall> : IDisposable where TCall : IDisposable
+    {
+        public ContextState(TCall call, CancellationTokenSource cancellationTokenSource)
+        {
+            Call = call;
+            CancellationTokenSource = cancellationTokenSource;
+        }
+
+        public TCall Call { get; }
+        public CancellationTokenSource CancellationTokenSource { get; }
+
+        public void Dispose()
+        {
+            Call.Dispose();
+            CancellationTokenSource.Dispose();
+        }
+    }
+
+    // Automatically dispose state after reading to the end of the stream.
+    private sealed class ResponseStreamWrapper<TResponse> : IAsyncStreamReader<TResponse>
+    {
+        private readonly IAsyncStreamReader<TResponse> _inner;
+        private readonly IDisposable _state;
+        private bool _disposed;
+
+        public ResponseStreamWrapper(IAsyncStreamReader<TResponse> inner, IDisposable state)
+        {
+            _inner = inner;
+            _state = state;
+        }
+
+        public TResponse Current => _inner.Current;
+
+        public async Task<bool> MoveNext(CancellationToken cancellationToken)
+        {
+            var result = await _inner.MoveNext(cancellationToken);
+            if (!result && !_disposed)
+            {
+                _state.Dispose();
+                _disposed = true;
+            }
+            return result;
+        }
+    }
+
+    private static partial class Log
+    {
+        [LoggerMessage(Level = LogLevel.Debug, EventId = 1, EventName = "PropagateServerCallContextFailure", Message = "Unable to propagate server context values to the call. {ErrorMessage}")]
+        public static partial void PropagateServerCallContextFailure(ILogger logger, string errorMessage);
+    }
+
+    // Store static callbacks so delegates are allocated once
+    private static class UnaryCallbacks<TResponse>
+        where TResponse : class
+    {
+        internal static readonly Func<object, Task<Metadata>> GetResponseHeadersAsync = state => ((ContextState<AsyncUnaryCall<TResponse>>)state).Call.ResponseHeadersAsync;
+        internal static readonly Func<object, Status> GetStatus = state => ((ContextState<AsyncUnaryCall<TResponse>>)state).Call.GetStatus();
+        internal static readonly Func<object, Metadata> GetTrailers = state => ((ContextState<AsyncUnaryCall<TResponse>>)state).Call.GetTrailers();
+        internal static readonly Action<object> Dispose = state => ((ContextState<AsyncUnaryCall<TResponse>>)state).Dispose();
+    }
+
+    private static class ServerStreamingCallbacks<TResponse>
+        where TResponse : class
+    {
+        internal static readonly Func<object, Task<Metadata>> GetResponseHeadersAsync = state => ((ContextState<AsyncServerStreamingCall<TResponse>>)state).Call.ResponseHeadersAsync;
+        internal static readonly Func<object, Status> GetStatus = state => ((ContextState<AsyncServerStreamingCall<TResponse>>)state).Call.GetStatus();
+        internal static readonly Func<object, Metadata> GetTrailers = state => ((ContextState<AsyncServerStreamingCall<TResponse>>)state).Call.GetTrailers();
+        internal static readonly Action<object> Dispose = state => ((ContextState<AsyncServerStreamingCall<TResponse>>)state).Dispose();
+    }
+
+    private static class DuplexStreamingCallbacks<TRequest, TResponse>
+        where TRequest : class
+        where TResponse : class
+    {
+        internal static readonly Func<object, Task<Metadata>> GetResponseHeadersAsync = state => ((ContextState<AsyncDuplexStreamingCall<TRequest, TResponse>>)state).Call.ResponseHeadersAsync;
+        internal static readonly Func<object, Status> GetStatus = state => ((ContextState<AsyncDuplexStreamingCall<TRequest, TResponse>>)state).Call.GetStatus();
+        internal static readonly Func<object, Metadata> GetTrailers = state => ((ContextState<AsyncDuplexStreamingCall<TRequest, TResponse>>)state).Call.GetTrailers();
+        internal static readonly Action<object> Dispose = state => ((ContextState<AsyncDuplexStreamingCall<TRequest, TResponse>>)state).Dispose();
+    }
+
+    private static class ClientStreamingCallbacks<TRequest, TResponse>
+        where TRequest : class
+        where TResponse : class
+    {
+        internal static readonly Func<object, Task<Metadata>> GetResponseHeadersAsync = state => ((ContextState<AsyncClientStreamingCall<TRequest, TResponse>>)state).Call.ResponseHeadersAsync;
+        internal static readonly Func<object, Status> GetStatus = state => ((ContextState<AsyncClientStreamingCall<TRequest, TResponse>>)state).Call.GetStatus();
+        internal static readonly Func<object, Metadata> GetTrailers = state => ((ContextState<AsyncClientStreamingCall<TRequest, TResponse>>)state).Call.GetTrailers();
+        internal static readonly Action<object> Dispose = state => ((ContextState<AsyncClientStreamingCall<TRequest, TResponse>>)state).Dispose();
     }
 }

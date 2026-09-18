@@ -1,4 +1,4 @@
-﻿#region Copyright notice and license
+#region Copyright notice and license
 
 // Copyright 2019 The gRPC Authors
 //
@@ -16,245 +16,300 @@
 
 #endregion
 
-using System;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading.Tasks;
 using Greet;
 using Grpc.Core;
 using Grpc.Net.Client.Tests.Infrastructure;
 using Grpc.Tests.Shared;
 using NUnit.Framework;
 
-namespace Grpc.Net.Client.Tests
+namespace Grpc.Net.Client.Tests;
+
+[TestFixture]
+public class ResponseHeadersAsyncTests
 {
-    [TestFixture]
-    public class ResponseHeadersAsyncTests
+    [Test]
+    public async Task AsyncUnaryCall_Success_ResponseHeadersPopulated()
     {
-        [Test]
-        public async Task AsyncUnaryCall_Success_ResponseHeadersPopulated()
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
-            {
-                HelloReply reply = new HelloReply
-                {
-                    Message = "Hello world"
-                };
+            var reply = new HelloReply { Message = "Hello world" };
+            var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Server.Add(new ProductInfoHeaderValue("TestName", "1.0"));
+            response.Headers.Add("custom", "ABC");
+            response.Headers.Add("binary-bin", Convert.ToBase64String(Encoding.UTF8.GetBytes("Hello world")));
+            return response;
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
-                var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-                response.Headers.Server.Add(new ProductInfoHeaderValue("TestName", "1.0"));
-                response.Headers.Add("custom", "ABC");
-                response.Headers.Add("binary-bin", Convert.ToBase64String(Encoding.UTF8.GetBytes("Hello world")));
-                return response;
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+        // Act
+        var call = invoker.AsyncUnaryCall(new HelloRequest());
+        var responseHeaders1 = await call.ResponseHeadersAsync.DefaultTimeout();
+        var responseHeaders2 = await call.ResponseHeadersAsync.DefaultTimeout();
 
-            // Act
-            var call = invoker.AsyncUnaryCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
-            var responseHeaders1 = await call.ResponseHeadersAsync.DefaultTimeout();
-            var responseHeaders2 = await call.ResponseHeadersAsync.DefaultTimeout();
+        // Assert
+        Assert.AreSame(responseHeaders1, responseHeaders2);
 
-            // Assert
-            Assert.AreSame(responseHeaders1, responseHeaders2);
+        Assert.AreEqual("TestName/1.0", responseHeaders1.GetValue("server"));
 
-            var header = responseHeaders1.Single(h => h.Key == "server");
-            Assert.AreEqual("TestName/1.0", header.Value);
+        Assert.AreEqual("ABC", responseHeaders1.GetValue("custom"));
 
-            header = responseHeaders1.Single(h => h.Key == "custom");
-            Assert.AreEqual("ABC", header.Value);
+        var header = responseHeaders1.Get("binary-bin")!;
+        Assert.AreEqual(true, header.IsBinary);
+        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("Hello world"), header.ValueBytes);
+    }
 
-            header = responseHeaders1.Single(h => h.Key == "binary-bin");
-            Assert.AreEqual(true, header.IsBinary);
-            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("Hello world"), header.ValueBytes);
-        }
-
-        [Test]
-        public async Task AsyncClientStreamingCall_Success_ResponseHeadersPopulated()
+    [Test]
+    public async Task AsyncUnaryCall_AuthInterceptorSuccess_ResponseHeadersPopulated()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
-            {
-                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-                response.Headers.Add("custom", "ABC");
-                return response;
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
-
-            // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
-
-            // Assert
-            var header = responseHeaders.Single(h => h.Key == "custom");
-            Assert.AreEqual("ABC", header.Value);
-        }
-
-        [Test]
-        public async Task AsyncDuplexStreamingCall_Success_ResponseHeadersPopulated()
+            var reply = new HelloReply { Message = "Hello world" };
+            var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var credentialsSyncPoint = new SyncPoint(runContinuationsAsynchronously: true);
+        var credentials = CallCredentials.FromInterceptor(async (context, metadata) =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
-            {
-                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-                response.Headers.Add("custom", "ABC");
-                return response;
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+            await credentialsSyncPoint.WaitToContinue();
+            metadata.Add("Authorization", $"Bearer TEST");
+        });
 
-            // Act
-            var call = invoker.AsyncDuplexStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: options => options.Credentials = ChannelCredentials.Create(new SslCredentials(), credentials));
 
-            // Assert
-            var header = responseHeaders.Single(h => h.Key == "custom");
-            Assert.AreEqual("ABC", header.Value);
-        }
+        // Act
+        var call = invoker.AsyncUnaryCall(new HelloRequest());
+        var responseHeadersTask = call.ResponseHeadersAsync;
 
-        [Test]
-        public async Task AsyncServerStreamingCall_Success_ResponseHeadersPopulated()
+        await credentialsSyncPoint.WaitForSyncPoint().DefaultTimeout();
+        credentialsSyncPoint.Continue();
+
+        var responseHeaders = await responseHeadersTask.DefaultTimeout();
+
+        // Assert
+        Assert.AreEqual("ABC", responseHeaders.GetValue("custom"));
+    }
+
+    [Test]
+    public async Task AsyncUnaryCall_AuthInterceptorDispose_ResponseHeadersError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(async request =>
-            {
-                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-                response.Headers.Add("custom", "ABC");
-                return response;
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
-
-            // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
-            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
-
-            // Assert
-            var header = responseHeaders.Single(h => h.Key == "custom");
-            Assert.AreEqual("ABC", header.Value);
-        }
-
-        [Test]
-        public async Task AsyncServerStreamingCall_ErrorSendingRequest_ReturnsError()
+            var reply = new HelloReply { Message = "Hello world" };
+            var streamContent = await ClientTestHelpers.CreateResponseContent(reply).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var credentialsSyncPoint = new SyncPoint(runContinuationsAsynchronously: true);
+        var credentials = CallCredentials.FromInterceptor(async (context, metadata) =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(request =>
-            {
-                return Task.FromException<HttpResponseMessage>(new Exception("An error!"));
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+            var tcs = new TaskCompletionSource<bool>();
+            context.CancellationToken.Register(s => ((TaskCompletionSource<bool>)s!).SetResult(true), tcs);
 
-            // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
+            await Task.WhenAny(credentialsSyncPoint.WaitToContinue(), tcs.Task);
+            metadata.Add("Authorization", $"Bearer TEST");
+        });
 
-            // Assert
-            Assert.AreEqual(StatusCode.Internal, ex.StatusCode);
-            Assert.AreEqual("Error starting gRPC call: An error!", ex.Status.Detail);
-            Assert.AreEqual(StatusCode.Internal, call.GetStatus().StatusCode);
-        }
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: options => options.Credentials = ChannelCredentials.Create(new SslCredentials(), credentials));
 
-        [Test]
-        public async Task AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ReturnsError()
+        // Act
+        var call = invoker.AsyncUnaryCall(new HelloRequest());
+        var responseHeadersTask = call.ResponseHeadersAsync;
+
+        await credentialsSyncPoint.WaitForSyncPoint().DefaultTimeout();
+
+        call.Dispose();
+
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
+        Assert.AreEqual(StatusCode.Cancelled, ex.StatusCode);
+    }
+
+    [Test]
+    public async Task AsyncClientStreamingCall_Success_ResponseHeadersPopulated()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
-            var httpClient = ClientTestHelpers.CreateTestClient(async (request, ct) =>
-            {
-                await tcs.Task.DefaultTimeout();
-                ct.ThrowIfCancellationRequested();
-                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-                response.Headers.Add("custom", "ABC");
-                return response;
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+        // Act
+        var call = invoker.AsyncClientStreamingCall();
+        var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
-            // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
-            call.Dispose();
-            tcs.TrySetResult(true);
+        // Assert
+        Assert.AreEqual("ABC", responseHeaders.GetValue("custom"));
+    }
 
-            // Assert
-            var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
-            Assert.AreEqual(StatusCode.Cancelled, ex.StatusCode);
-            Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
-        }
-
-        [Test]
-        public async Task AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ThrowOperationCanceledOnCancellation_ReturnsError()
+    [Test]
+    public async Task AsyncDuplexStreamingCall_Success_ResponseHeadersPopulated()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
-            var httpClient = ClientTestHelpers.CreateTestClient(async (request, ct) =>
-            {
-                await tcs.Task.DefaultTimeout();
-                ct.ThrowIfCancellationRequested();
-                var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
-                response.Headers.Add("custom", "ABC");
-                return response;
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.ThrowOperationCanceledOnCancellation = true);
+        // Act
+        var call = invoker.AsyncDuplexStreamingCall();
+        var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
-            // Act
-            var call = invoker.AsyncServerStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions(), new HelloRequest());
-            call.Dispose();
-            tcs.TrySetResult(true);
+        // Assert
+        Assert.AreEqual("ABC", responseHeaders.GetValue("custom"));
+    }
 
-            // Assert
-            await ExceptionAssert.ThrowsAsync<OperationCanceledException>(() => call.ResponseHeadersAsync).DefaultTimeout();
-            Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
-        }
-
-        [Test]
-        public async Task AsyncClientStreamingCall_NotFoundStatus_ResponseHeadersPopulated()
+    [Test]
+    public async Task AsyncServerStreamingCall_Success_ResponseHeadersPopulated()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(async request =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(request =>
-            {
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.NotFound);
-                response.Headers.Add("custom", "ABC");
-                return Task.FromResult(response);
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+            var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
-            // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
+        // Act
+        var call = invoker.AsyncServerStreamingCall(new HelloRequest());
+        var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
 
-            // Assert
-            var header = responseHeaders.Single(h => h.Key == "custom");
-            Assert.AreEqual("ABC", header.Value);
-        }
+        // Assert
+        Assert.AreEqual("ABC", responseHeaders.GetValue("custom"));
+    }
 
-        [Test]
-        public async Task AsyncClientStreamingCall_InvalidContentType_ResponseHeadersPopulated()
+    [Test]
+    public async Task AsyncServerStreamingCall_ErrorSendingRequest_ReturnsError()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(request =>
         {
-            // Arrange
-            var httpClient = ClientTestHelpers.CreateTestClient(request =>
-            {
-                var response = ResponseUtils.CreateResponse(HttpStatusCode.OK);
-                response.Headers.Add("custom", "ABC");
-                response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
-                return Task.FromResult(response);
-            });
-            var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+            return Task.FromException<HttpResponseMessage>(new Exception("An error!"));
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
 
-            // Act
-            var call = invoker.AsyncClientStreamingCall<HelloRequest, HelloReply>(ClientTestHelpers.ServiceMethod, string.Empty, new CallOptions());
-            var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
+        // Act
+        var call = invoker.AsyncServerStreamingCall(new HelloRequest());
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
 
-            // Assert
-            var header = responseHeaders.Single(h => h.Key == "custom");
-            Assert.AreEqual("ABC", header.Value);
-        }
+        // Assert
+        Assert.AreEqual(StatusCode.Internal, ex.StatusCode);
+        Assert.AreEqual("Error starting gRPC call. Exception: An error!", ex.Status.Detail);
+        Assert.AreEqual(StatusCode.Internal, call.GetStatus().StatusCode);
+    }
+
+    [Test]
+    public async Task AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ReturnsError()
+    {
+        // Arrange
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var httpClient = ClientTestHelpers.CreateTestClient(async (request, ct) =>
+        {
+            await tcs.Task.DefaultTimeout();
+            ct.ThrowIfCancellationRequested();
+            var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+
+        // Act
+        var call = invoker.AsyncServerStreamingCall(new HelloRequest());
+        call.Dispose();
+        tcs.TrySetResult(true);
+
+        // Assert
+        var ex = await ExceptionAssert.ThrowsAsync<RpcException>(() => call.ResponseHeadersAsync).DefaultTimeout();
+        Assert.AreEqual(StatusCode.Cancelled, ex.StatusCode);
+        Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
+    }
+
+    [Test]
+    public async Task AsyncServerStreamingCall_DisposeBeforeHeadersReceived_ThrowOperationCanceledOnCancellation_ReturnsError()
+    {
+        // Arrange
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var httpClient = ClientTestHelpers.CreateTestClient(async (request, ct) =>
+        {
+            await tcs.Task.DefaultTimeout();
+            ct.ThrowIfCancellationRequested();
+            var streamContent = await ClientTestHelpers.CreateResponseContent(new HelloReply()).DefaultTimeout();
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK, streamContent);
+            response.Headers.Add("custom", "ABC");
+            return response;
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient, configure: o => o.ThrowOperationCanceledOnCancellation = true);
+
+        // Act
+        var call = invoker.AsyncServerStreamingCall(new HelloRequest());
+        call.Dispose();
+        tcs.TrySetResult(true);
+
+        // Assert
+        await ExceptionAssert.ThrowsAsync<OperationCanceledException>(() => call.ResponseHeadersAsync).DefaultTimeout();
+        Assert.AreEqual(StatusCode.Cancelled, call.GetStatus().StatusCode);
+    }
+
+    [Test]
+    public async Task AsyncClientStreamingCall_NotFoundStatus_ResponseHeadersPopulated()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(request =>
+        {
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.NotFound);
+            response.Headers.Add("custom", "ABC");
+            return Task.FromResult(response);
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+
+        // Act
+        var call = invoker.AsyncClientStreamingCall();
+        var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
+
+        // Assert
+        Assert.AreEqual("ABC", responseHeaders.GetValue("custom"));
+    }
+
+    [Test]
+    public async Task AsyncClientStreamingCall_InvalidContentType_ResponseHeadersPopulated()
+    {
+        // Arrange
+        var httpClient = ClientTestHelpers.CreateTestClient(request =>
+        {
+            var response = ResponseUtils.CreateResponse(HttpStatusCode.OK);
+            response.Headers.Add("custom", "ABC");
+            response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+            return Task.FromResult(response);
+        });
+        var invoker = HttpClientCallInvokerFactory.Create(httpClient);
+
+        // Act
+        var call = invoker.AsyncClientStreamingCall();
+        var responseHeaders = await call.ResponseHeadersAsync.DefaultTimeout();
+
+        // Assert
+        Assert.AreEqual("ABC", responseHeaders.GetValue("custom"));
     }
 }
